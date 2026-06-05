@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   ClipboardList,
   Database,
+  Trash2,
   Download,
   Edit3,
   Eye,
@@ -26,6 +27,8 @@ import {
   Save,
   Scissors,
   Sparkles,
+  Moon,
+  Sun,
   Terminal,
   Upload,
   X,
@@ -33,15 +36,27 @@ import {
 import { buildContextPack } from "./lib/contextPack";
 import type { ContextPack } from "./lib/contextPack";
 import {
-  addProjectVersion,
+  addBackendRoot,
+  createBackendProject,
+  deleteBackendProject,
+  getBackendRoots,
+  listBackendProjects,
+  loadBackendProject,
+  removeBackendRoot,
+  saveBackendProject,
+  type BackendRoot,
+} from "./lib/projectApi";
+import {
   createProject,
+  createDefaultProjectName,
   loadProjectStore,
-  restoreProjectVersion,
   saveProjectStore,
+  toSafeFolderName,
   updateProjectSnapshot,
 } from "./lib/projectStore";
 import type { ProjectStoreState, StoryboardProject } from "./lib/projectStore";
-import { buildScriptQualityReport } from "./lib/scriptQuality";
+import { buildScriptQualityReport, defaultScriptQualityRules, loadScriptQualityRules, saveScriptQualityRules } from "./lib/scriptQuality";
+import type { ScriptQualityRule } from "./lib/scriptQuality";
 import { analyzeScript, exportEpisodeBundle, formatJson, parseEpisodeBundle } from "./lib/storyboard";
 import type { AnalysisOptions, AssetDescription, EpisodeResult, ScriptAnalysis } from "./lib/storyboard";
 import { defaultOutputAdapters, defaultPipelineConfig } from "./pipeline/defaults";
@@ -95,18 +110,45 @@ interface DevLogEntry {
 function App() {
   const [activePage, setActivePage] = useLocalState("active-page", "script");
   const [isNavCollapsed, setIsNavCollapsed] = useLocalState("nav-collapsed", "false");
+  const [themeMode, setThemeMode] = useLocalState("theme-mode", "light");
   const [isToolDrawerOpen, setIsToolDrawerOpen] = useState(false);
   const fallbackOptions: AnalysisOptions = {
     genreProfile: "都市情感短剧",
     directorProfile: "强冲突快节奏",
     targetShotSeconds: 5,
+    aspectRatio: "9:16",
+    contentType: "短剧",
   };
   const [projectStore, setProjectStore] = useState<ProjectStoreState>(() => loadProjectStore(sampleScript, fallbackOptions));
-  const activeProject = projectStore.projects.find((project) => project.projectId === projectStore.activeProjectId) ?? projectStore.projects[0];
+  const [projectRoot, setProjectRoot] = useState<BackendRoot | null>(null);
+  const [projectRoots, setProjectRoots] = useState<BackendRoot[]>([]);
+  const [isRootDialogOpen, setIsRootDialogOpen] = useState(false);
+  const [rootPathDraft, setRootPathDraft] = useState("");
+  const [newProjectName, setNewProjectName] = useState("");
+  const [isCreateProjectDialogOpen, setIsCreateProjectDialogOpen] = useState(false);
+  const [projectPendingDelete, setProjectPendingDelete] = useState<StoryboardProject | null>(null);
+  const [rootPendingRemove, setRootPendingRemove] = useState<BackendRoot | null>(null);
+  const [scriptQualityRules, setScriptQualityRules] = useState<ScriptQualityRule[]>(() => loadScriptQualityRules());
+  const [isScriptRuleDialogOpen, setIsScriptRuleDialogOpen] = useState(false);
+  const [episodeSplitDraft, setEpisodeSplitDraft] = useState<EpisodeSplitDraft | null>(null);
+  const emptyProject = useMemo(
+    () =>
+      createProject({
+        name: "未选择项目",
+        script: "",
+        options: fallbackOptions,
+        analysis: analyzeScript("", fallbackOptions),
+        latestRun: null,
+      }),
+    [],
+  );
+  const activeProject = projectStore.projects.find((project) => project.projectId === projectStore.activeProjectId) ?? projectStore.projects[0] ?? emptyProject;
   const [script, setScript] = useState(() => activeProject.script);
   const [genreProfile, setGenreProfile] = useState(() => activeProject.options.genreProfile);
   const [directorProfile, setDirectorProfile] = useState(() => activeProject.options.directorProfile);
   const [targetShotSeconds, setTargetShotSeconds] = useState(() => activeProject.options.targetShotSeconds);
+  const [aspectRatio, setAspectRatio] = useState(() => activeProject.options.aspectRatio);
+  const [contentType, setContentType] = useState(() => activeProject.options.contentType);
   const [selectedEpisodeId, setSelectedEpisodeId] = useLocalState("selected-episode", "EP01");
   const [analysis, setAnalysis] = useState<ScriptAnalysis>(() => activeProject.analysis);
   const [hasDraftChanges, setHasDraftChanges] = useState(false);
@@ -135,8 +177,10 @@ function App() {
       genreProfile,
       directorProfile,
       targetShotSeconds,
+      aspectRatio,
+      contentType,
     }),
-    [genreProfile, directorProfile, targetShotSeconds],
+    [genreProfile, directorProfile, targetShotSeconds, aspectRatio, contentType],
   );
   const selectedEpisode = analysis.episodes.find((episode) => episode.episodeId === selectedEpisodeId) ?? analysis.episodes[0];
   const isCollapsed = isNavCollapsed === "true";
@@ -148,16 +192,22 @@ function App() {
     saveProjectStore(projectStore);
   }, [projectStore]);
 
+  useEffect(() => {
+    void initializeBackendRoots();
+  }, []);
+
   function applyProject(project: StoryboardProject) {
     setScript(project.script);
     setGenreProfile(project.options.genreProfile);
     setDirectorProfile(project.options.directorProfile);
     setTargetShotSeconds(project.options.targetShotSeconds);
+    setAspectRatio(project.options.aspectRatio);
+    setContentType(project.options.contentType);
     setAnalysis(project.analysis);
     setLatestRun(project.latestRun);
     setSelectedEpisodeId(project.analysis.episodes[0]?.episodeId ?? "EP01");
     setHasDraftChanges(false);
-    appendLog("project", "info", `已切换到 ${project.name}`, `${project.versions.length} 个版本。`);
+    appendLog("project", "info", `已切换到 ${project.name}`, project.folderName ?? toSafeFolderName(project.name));
   }
 
   function updateActiveProject(mutator: (project: StoryboardProject) => StoryboardProject) {
@@ -168,52 +218,174 @@ function App() {
   }
 
   function handleSaveProject() {
+    const savedProject = updateProjectSnapshot(activeProject, {
+      projectId: activeProject.projectId,
+      name: activeProject.name,
+      script,
+      options,
+      analysis,
+      latestRun,
+    });
     updateActiveProject((project) =>
-      addProjectVersion(
-        updateProjectSnapshot(project, {
-          projectId: project.projectId,
-          name: project.name,
-          script,
-          options,
-          analysis,
-          latestRun,
-        }),
-        `保存 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })}`,
-      ),
+      project.projectId === activeProject.projectId ? savedProject : project,
     );
     setHasDraftChanges(false);
     showToast("项目已保存");
-    appendLog("project", "success", "项目已保存", `${activeProject.name} 已写入本地版本。`);
+    appendLog("project", "success", "项目已保存", `${activeProject.name} 已更新。`);
+    if (projectRoot && activeProject.projectId) {
+      void saveBackendProject({ ...savedProject, rootName: projectRoot.rootName }).then(
+        () => appendLog("project-files", "success", "项目文件已写入根目录", `${projectRoot.rootName}/${savedProject.folderName || toSafeFolderName(savedProject.name)}`),
+        (error) => appendLog("project-files", "warning", "项目文件写入失败", error instanceof Error ? error.message : "未知错误"),
+      );
+    }
   }
 
-  function handleCreateProject() {
-    const name = `项目 ${projectStore.projects.length + 1}`;
-    const project = createProject({
-      name,
-      script: sampleScript,
-      options: fallbackOptions,
-      analysis: analyzeScript(sampleScript, fallbackOptions),
-      latestRun: null,
-    });
+  async function initializeBackendRoots() {
+    try {
+      const state = await getBackendRoots();
+      setProjectRoots(state.roots);
+      const activeRoot = state.roots.find((root) => root.isActive) ?? null;
+      setProjectRoot(activeRoot);
+      if (activeRoot) await refreshProjectsFromRoot(activeRoot);
+    } catch (error) {
+      appendLog("project-root", "warning", "后端根目录配置读取失败", error instanceof Error ? error.message : "未知错误");
+    }
+  }
+
+  async function handleAddProjectRoot() {
+    try {
+      const state = await addBackendRoot(rootPathDraft);
+      setProjectRoots(state.roots);
+      const activeRoot = state.roots.find((root) => root.isActive) ?? null;
+      setProjectRoot(activeRoot);
+      setIsRootDialogOpen(false);
+      setRootPathDraft("");
+      if (activeRoot) await refreshProjectsFromRoot(activeRoot);
+      showToast(`当前根目录：${activeRoot?.rootName ?? ""}`);
+      appendLog("project-root", "success", "项目根目录已保存并刷新", activeRoot?.rootPath ?? "");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "保存根目录失败。";
+      appendLog("project-root", "error", "保存根目录失败", message);
+    }
+  }
+
+  async function refreshProjectsFromRoot(root = projectRoot) {
+    if (!root) return;
+    try {
+      const { projects } = await listBackendProjects();
+      if (!projects.length) {
+        setProjectStore({ activeProjectId: "", projects: [] });
+        setScript("");
+        setAnalysis(analyzeScript("", fallbackOptions));
+        setLatestRun(null);
+        appendLog("project-root", "info", "根目录暂无项目", root.rootName);
+        return;
+      }
+      setProjectStore({
+        activeProjectId: projects[0].projectId,
+        projects,
+      });
+      await loadAndApplyProject(projects[0]);
+      appendLog("project-root", "success", "项目列表已刷新", `${root.rootName} / ${projects.length} 个项目。`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "读取项目根目录失败。";
+      appendLog("project-root", "error", "读取项目根目录失败", message);
+    }
+  }
+
+  async function removeProjectRootAuthorization(root: BackendRoot) {
+    try {
+      const state = await removeBackendRoot(root.rootPath);
+      setProjectRoots(state.roots);
+      const activeRoot = state.roots.find((item) => item.isActive) ?? null;
+      setProjectRoot(activeRoot);
+      setRootPendingRemove(null);
+      if (activeRoot) {
+        await refreshProjectsFromRoot(activeRoot);
+      } else {
+        switchToDefaultProjectStore();
+      }
+      appendLog("project-root", "info", "根目录已从后端配置移除", `${root.rootPath} 的项目文件夹未删除。`);
+    } catch (error) {
+      appendLog("project-root", "error", "移除根目录失败", error instanceof Error ? error.message : "未知错误");
+    }
+  }
+
+  function switchToDefaultProjectStore() {
+    const localStore = loadProjectStore(sampleScript, fallbackOptions);
+    setProjectRoot(null);
+    setProjectStore(localStore);
+    const nextProject = localStore.projects.find((project) => project.projectId === localStore.activeProjectId) ?? localStore.projects[0];
+    if (nextProject) applyProject(nextProject);
+    appendLog("project-root", "info", "已切回默认本地缓存", "项目列表来自浏览器本地存储。");
+  }
+
+  async function handleCreateProject() {
+    const name = newProjectName.trim() || createDefaultProjectName(projectStore.projects.length);
+    const project = projectRoot ? (await createBackendProject(name, fallbackOptions)).project : createProject({
+        name,
+        script: "",
+        options: fallbackOptions,
+        analysis: analyzeScript("", fallbackOptions),
+        latestRun: null,
+      });
     setProjectStore((current) => ({
       activeProjectId: project.projectId,
       projects: [project, ...current.projects],
     }));
     applyProject(project);
+    setNewProjectName("");
+    setIsCreateProjectDialogOpen(false);
+    if (projectRoot) await refreshProjectsFromRoot(projectRoot);
+  }
+
+  async function handleDeleteProject(project: StoryboardProject) {
+    const remaining = projectStore.projects.filter((item) => item.projectId !== project.projectId);
+    const nextActive = project.projectId === projectStore.activeProjectId ? remaining[0] : activeProject;
+    setProjectStore({
+      activeProjectId: nextActive?.projectId ?? "",
+      projects: remaining,
+    });
+    if (nextActive) {
+      applyProject(nextActive);
+    } else {
+      setScript("");
+      setAnalysis(analyzeScript("", fallbackOptions));
+      setLatestRun(null);
+      setHasDraftChanges(false);
+    }
+    setProjectPendingDelete(null);
+    appendLog("project", "warning", `已删除项目 ${project.name}`, "已从本地项目列表移除。");
+    if (projectRoot) {
+      try {
+        await deleteBackendProject(project.projectId);
+        appendLog("project-files", "success", "项目文件夹已删除", `${projectRoot.rootName}/${project.folderName || toSafeFolderName(project.name)}`);
+        await refreshProjectsFromRoot(projectRoot);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "删除项目文件夹失败。";
+        appendLog("project-files", "warning", "项目文件夹未删除", message);
+      }
+    }
+  }
+
+  async function loadAndApplyProject(project: StoryboardProject, root = projectRoot) {
+    if (!root || project.script) {
+      applyProject(project);
+      return;
+    }
+    const loadedProject = (await loadBackendProject(project.projectId)).project;
+    setProjectStore((current) => ({
+      ...current,
+      projects: current.projects.map((item) => (item.projectId === loadedProject.projectId ? loadedProject : item)),
+    }));
+    applyProject(loadedProject);
   }
 
   function handleSelectProject(projectId: string) {
     const project = projectStore.projects.find((item) => item.projectId === projectId);
     if (!project) return;
     setProjectStore((current) => ({ ...current, activeProjectId: projectId }));
-    applyProject(project);
-  }
-
-  function handleRestoreVersion(versionId: string) {
-    const restored = restoreProjectVersion(activeProject, versionId);
-    updateActiveProject(() => restored);
-    applyProject(restored);
-    showToast("版本已恢复");
+    void loadAndApplyProject(project);
   }
 
   function updateLock(targetId: string, status: "locked" | "unlocked" | "needs_review", reason: string) {
@@ -340,9 +512,49 @@ function App() {
   async function handleFileUpload(file: File | undefined) {
     if (!file) return;
     const text = await file.text();
-    setScript(text);
+    const customRule = localStorage.getItem("custom-episode-split-rule") ?? "";
+    setEpisodeSplitDraft({
+      fileName: file.name,
+      sourceText: text,
+      customRule,
+      preview: splitScriptIntoEpisodes(text, customRule),
+    });
+    appendLog("input", "info", "合集剧本已读取", `${file.name}，等待确认分集后写入。`);
+  }
+
+  async function handleFilesUpload(files: FileList | null) {
+    if (!files?.length) return;
+    const texts = await Promise.all(Array.from(files).map(async (file) => ({ name: file.name, text: await file.text() })));
+    const merged = texts.map((item, index) => ensureEpisodeHeading(item.text, index + 1)).filter(Boolean).join("\n\n");
+    setScript(merged);
     setHasDraftChanges(true);
-    appendLog("input", "info", "剧本文件已导入", `${file.name}，${text.length.toLocaleString()} 字。`);
+    appendLog("input", "info", "分集剧本已导入", `${texts.length} 个文件，${merged.length.toLocaleString()} 字。`);
+  }
+
+  async function handleEpisodeFileUpload(file: File | undefined, mode: "append" | "replace", episodeNumber: number) {
+    if (!file) return;
+    const text = await file.text();
+    const episodeNumberSafe = Math.max(1, Math.floor(episodeNumber || 1));
+    const currentPreview = splitScriptIntoEpisodes(script, "");
+    const nextEpisodeText = ensureEpisodeHeading(text, mode === "append" ? currentPreview.episodes.length + 1 : episodeNumberSafe);
+    if (mode === "append") {
+      updateScript([script.trim(), nextEpisodeText].filter(Boolean).join("\n\n"));
+      appendLog("input", "info", "单集已追加", `${file.name} -> 第 ${currentPreview.episodes.length + 1} 集。`);
+      return;
+    }
+    const nextEpisodes = currentPreview.episodes.length ? [...currentPreview.episodes] : [];
+    const replaceIndex = episodeNumberSafe - 1;
+    while (nextEpisodes.length <= replaceIndex) {
+      const number = nextEpisodes.length + 1;
+      nextEpisodes.push({ episodeNumber: number, title: `第${number}集`, text: `第${number}集` });
+    }
+    nextEpisodes[replaceIndex] = {
+      episodeNumber: episodeNumberSafe,
+      title: `第${episodeNumberSafe}集`,
+      text: nextEpisodeText,
+    };
+    updateScript(nextEpisodes.map((episode) => episode.text.trim()).filter(Boolean).join("\n\n"));
+    appendLog("input", "info", "单集已替换", `${file.name} -> 第 ${episodeNumberSafe} 集。`);
   }
 
   function updateScript(value: string) {
@@ -353,6 +565,69 @@ function App() {
   function updateOption(update: () => void) {
     update();
     setHasDraftChanges(true);
+  }
+
+  function updateProjectOptions(
+    nextOptions: AnalysisOptions,
+    setters: {
+      setGenreProfile: (value: string) => void;
+      setDirectorProfile: (value: string) => void;
+      setTargetShotSeconds: (value: number) => void;
+      setAspectRatio: (value: string) => void;
+      setContentType: (value: string) => void;
+    },
+  ) {
+    setters.setGenreProfile(nextOptions.genreProfile);
+    setters.setDirectorProfile(nextOptions.directorProfile);
+    setters.setTargetShotSeconds(nextOptions.targetShotSeconds);
+    setters.setAspectRatio(nextOptions.aspectRatio);
+    setters.setContentType(nextOptions.contentType);
+    updateActiveProject((project) =>
+      updateProjectSnapshot(project, {
+        projectId: project.projectId,
+        name: project.name,
+        script,
+        options: nextOptions,
+        analysis,
+        latestRun,
+      }),
+    );
+    setHasDraftChanges(true);
+    appendLog("project-options", "info", "项目基本参数已更新", `${nextOptions.contentType} / ${nextOptions.aspectRatio}`);
+  }
+
+  function updateScriptQualityRules(rules: ScriptQualityRule[]) {
+    setScriptQualityRules(rules);
+    saveScriptQualityRules(rules);
+    appendLog("script-check", "info", "校检规则已更新", `${rules.filter((rule) => rule.enabled).length} 条启用。`);
+  }
+
+  function handleRunScriptCheck() {
+    appendLog(
+      "script-check",
+      scriptQuality.issues.some((issue) => issue.level === "错误") ? "error" : scriptQuality.issues.length ? "warning" : "success",
+      "剧本校检已执行",
+      `${scriptQuality.stats.lines} 行 / ${scriptQuality.stats.characters.toLocaleString()} 字 / ${scriptQuality.issues.length} 个疑点。`,
+    );
+    showToast(`校检完成：${scriptQuality.issues.length} 个疑点`);
+  }
+
+  function updateEpisodeSplitDraftRule(value: string) {
+    if (!episodeSplitDraft) return;
+    localStorage.setItem("custom-episode-split-rule", value);
+    setEpisodeSplitDraft({
+      ...episodeSplitDraft,
+      customRule: value,
+      preview: splitScriptIntoEpisodes(episodeSplitDraft.sourceText, value),
+    });
+  }
+
+  function confirmEpisodeSplitDraft() {
+    if (!episodeSplitDraft) return;
+    const nextScript = formatEpisodeSplitPreview(episodeSplitDraft.preview);
+    updateScript(nextScript);
+    appendLog("input", "success", "合集分集已确认", `${episodeSplitDraft.preview.episodes.length} 集已写入当前剧本。`);
+    setEpisodeSplitDraft(null);
   }
 
   function updateSelectedEpisode(nextEpisode: EpisodeResult) {
@@ -387,12 +662,14 @@ function App() {
   }
 
   return (
-    <main className="app-shell">
+    <main className="app-shell" data-theme={themeMode === "dark" ? "dark" : "light"}>
       <TopBar
         project={activeProject}
         analysis={analysis}
         hasDraftChanges={hasDraftChanges}
         lastGeneratedAt={lastGeneratedAt}
+        themeMode={themeMode === "dark" ? "dark" : "light"}
+        onToggleTheme={() => setThemeMode(themeMode === "dark" ? "light" : "dark")}
         onSaveProject={handleSaveProject}
         onGenerate={handleGenerate}
         onExportAll={handleExportAll}
@@ -410,19 +687,49 @@ function App() {
 
         <section className="right-pane">
           {toast && <div className="toast">{toast}</div>}
+          {activePage === "projects" && (
+            <ProjectManagementView
+              activeProjectId={projectStore.activeProjectId}
+              projects={projectStore.projects}
+              projectRootName={projectRoot?.rootName ?? ""}
+              projectRoots={projectRoots}
+              options={options}
+              onPickRoot={() => setIsRootDialogOpen(true)}
+              onSelectRoot={(root) => {
+                setProjectRoot(root);
+                void refreshProjectsFromRoot(root);
+              }}
+              onSelectDefaultRoot={switchToDefaultProjectStore}
+              onRequestRemoveRoot={setRootPendingRemove}
+              onRefreshRoot={() => void refreshProjectsFromRoot()}
+              onOpenCreateProject={() => {
+                setNewProjectName("");
+                setIsCreateProjectDialogOpen(true);
+              }}
+              onSelectProject={handleSelectProject}
+              onRequestDeleteProject={setProjectPendingDelete}
+              onOptionsChange={(nextOptions) =>
+                updateProjectOptions(nextOptions, {
+                  setGenreProfile,
+                  setDirectorProfile,
+                  setTargetShotSeconds,
+                  setAspectRatio,
+                  setContentType,
+                })
+              }
+            />
+          )}
           {activePage === "script" && (
             <ScriptWorkspace
               script={script}
-              genreProfile={genreProfile}
-              directorProfile={directorProfile}
-              targetShotSeconds={targetShotSeconds}
               report={scriptQuality}
               onScriptChange={updateScript}
-              onGenreChange={(value) => updateOption(() => setGenreProfile(value))}
-              onDirectorChange={(value) => updateOption(() => setDirectorProfile(value))}
-              onTargetShotSecondsChange={(value) => updateOption(() => setTargetShotSeconds(value))}
               onFileUpload={handleFileUpload}
-              onGenerate={handleGenerate}
+              onEpisodeFileUpload={handleEpisodeFileUpload}
+              onBatchEpisodeUpload={handleFilesUpload}
+              onRunScriptCheck={handleRunScriptCheck}
+              rules={scriptQualityRules}
+              onOpenRuleConfig={() => setIsScriptRuleDialogOpen(true)}
               onApplyCleanedScript={() => {
                 updateScript(scriptQuality.cleanedScript);
                 showToast("清洗稿已写回剧本");
@@ -490,12 +797,60 @@ function App() {
           activeProjectId={projectStore.activeProjectId}
           projects={projectStore.projects}
           onClose={() => setIsToolDrawerOpen(false)}
-          onCreateProject={handleCreateProject}
+          onCreateProject={() => {
+            setNewProjectName("");
+            setIsCreateProjectDialogOpen(true);
+          }}
           onSelectProject={handleSelectProject}
           onSaveProject={handleSaveProject}
-          onRestoreVersion={handleRestoreVersion}
           onGenerate={handleGenerate}
           onExportAll={handleExportAll}
+        />
+      )}
+      {isCreateProjectDialogOpen && (
+        <ProjectNameDialog
+          value={newProjectName}
+          defaultName={createDefaultProjectName(projectStore.projects.length)}
+          onChange={setNewProjectName}
+          onCancel={() => setIsCreateProjectDialogOpen(false)}
+          onConfirm={() => void handleCreateProject()}
+        />
+      )}
+      {isRootDialogOpen && (
+        <ProjectRootDialog
+          value={rootPathDraft}
+          onChange={setRootPathDraft}
+          onCancel={() => setIsRootDialogOpen(false)}
+          onConfirm={() => void handleAddProjectRoot()}
+        />
+      )}
+      {isScriptRuleDialogOpen && (
+        <ScriptRuleConfigDialog
+          rules={scriptQualityRules}
+          onChange={updateScriptQualityRules}
+          onClose={() => setIsScriptRuleDialogOpen(false)}
+        />
+      )}
+      {episodeSplitDraft && (
+        <EpisodeSplitPreviewDialog
+          draft={episodeSplitDraft}
+          onRuleChange={updateEpisodeSplitDraftRule}
+          onConfirm={confirmEpisodeSplitDraft}
+          onClose={() => setEpisodeSplitDraft(null)}
+        />
+      )}
+      {projectPendingDelete && (
+        <DeleteProjectDialog
+          project={projectPendingDelete}
+          onCancel={() => setProjectPendingDelete(null)}
+          onConfirm={() => void handleDeleteProject(projectPendingDelete)}
+        />
+      )}
+      {rootPendingRemove && (
+        <RemoveRootDialog
+          root={rootPendingRemove}
+          onCancel={() => setRootPendingRemove(null)}
+          onConfirm={() => removeProjectRootAuthorization(rootPendingRemove)}
         />
       )}
       <DevLogPanel
@@ -524,6 +879,8 @@ function TopBar({
   analysis,
   hasDraftChanges,
   lastGeneratedAt,
+  themeMode,
+  onToggleTheme,
   onSaveProject,
   onGenerate,
   onExportAll,
@@ -533,6 +890,8 @@ function TopBar({
   analysis: ScriptAnalysis;
   hasDraftChanges: boolean;
   lastGeneratedAt: string;
+  themeMode: "light" | "dark";
+  onToggleTheme: () => void;
   onSaveProject: () => void;
   onGenerate: () => void | Promise<void>;
   onExportAll: () => Promise<void>;
@@ -547,7 +906,7 @@ function TopBar({
         <FolderKanban size={17} />
         <div>
           <strong>{project.name}</strong>
-          <span>本地项目 · {project.versions.length} 版本</span>
+          <span>本地项目</span>
         </div>
       </div>
       <div className="top-metrics">
@@ -557,6 +916,10 @@ function TopBar({
       </div>
       <StatusBar hasDraftChanges={hasDraftChanges} lastGeneratedAt={lastGeneratedAt} />
       <div className="top-actions">
+        <button onClick={onToggleTheme} title={themeMode === "dark" ? "切换浅色模式" : "切换深色模式"}>
+          {themeMode === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+          {themeMode === "dark" ? "浅色" : "深色"}
+        </button>
         <button onClick={onSaveProject}>
           <Save size={16} />
           保存
@@ -590,7 +953,7 @@ function AppNav({
   onToggleCollapse: () => void;
 }) {
   const items = [
-    { id: "projects", label: "项目", icon: <FolderKanban size={18} />, disabled: true },
+    { id: "projects", label: "项目管理", icon: <FolderKanban size={18} /> },
     { id: "script", label: "剧本校验", icon: <FileText size={18} /> },
     { id: "assets", label: "资产生图", icon: <Image size={18} /> },
     { id: "storyboard", label: "分镜工作台", icon: <Scissors size={18} /> },
@@ -602,15 +965,14 @@ function AppNav({
     <nav className="app-nav" aria-label="主导航">
       <button className="nav-toggle" onClick={onToggleCollapse} title={isCollapsed ? "展开导航" : "收起导航"}>
         <Menu size={18} />
-        {!isCollapsed && <span>剧本生产</span>}
+        {!isCollapsed && <span>收起</span>}
       </button>
       <div className="nav-list">
         {items.map((item) => (
           <button
             key={item.id}
             className={activePage === item.id ? "active" : ""}
-            onClick={() => !item.disabled && setActivePage(item.id)}
-            disabled={item.disabled}
+            onClick={() => setActivePage(item.id)}
             title={item.label}
           >
             {item.icon}
@@ -639,6 +1001,488 @@ function StatusBar({
     <div className={hasDraftChanges ? "status-bar dirty" : "status-bar"}>
       {hasDraftChanges ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}
       <span>{hasDraftChanges ? "有未生成改动" : `已生成 ${lastGeneratedAt}`}</span>
+    </div>
+  );
+}
+
+function ProjectManagementView({
+  activeProjectId,
+  projects,
+  projectRootName,
+  projectRoots,
+  options,
+  onPickRoot,
+  onSelectRoot,
+  onSelectDefaultRoot,
+  onRequestRemoveRoot,
+  onRefreshRoot,
+  onOpenCreateProject,
+  onSelectProject,
+  onRequestDeleteProject,
+  onOptionsChange,
+}: {
+  activeProjectId: string;
+  projects: StoryboardProject[];
+  projectRootName: string;
+  projectRoots: BackendRoot[];
+  options: AnalysisOptions;
+  onPickRoot: () => void;
+  onSelectRoot: (root: BackendRoot) => void;
+  onSelectDefaultRoot: () => void;
+  onRequestRemoveRoot: (root: BackendRoot) => void;
+  onRefreshRoot: () => void;
+  onOpenCreateProject: () => void;
+  onSelectProject: (projectId: string) => void;
+  onRequestDeleteProject: (project: StoryboardProject) => void;
+  onOptionsChange: (options: AnalysisOptions) => void;
+}) {
+  const activeProject = projects.find((project) => project.projectId === activeProjectId) ?? projects[0];
+  const [displayMode, setDisplayMode] = useLocalState("project-display-mode", "cards");
+  const isCardMode = displayMode !== "list";
+
+  return (
+    <section className="page-stack">
+      <div className="page-header work-header">
+        <div>
+          <h2>项目管理</h2>
+          <p>一个项目对应一个独立文件夹；项目配置、输入、产物和导出都应跟随项目文件夹。</p>
+        </div>
+        <div className="header-actions">
+          <button onClick={onPickRoot}>
+            <FolderKanban size={16} />
+            选择根目录
+          </button>
+          <button onClick={onRefreshRoot} disabled={!projectRootName}>
+            <RefreshCcw size={16} />
+            刷新项目列表
+          </button>
+        </div>
+      </div>
+
+      <section className="project-management-grid">
+        <article className="panel project-create-panel">
+          <div className="panel-title">
+            <FolderKanban size={18} />
+            <span>项目根目录授权</span>
+            <strong>{projectRootName || "未选择"}</strong>
+          </div>
+          <div className="project-root-list">
+            <div className={!projectRootName ? "project-root-item active" : "project-root-item"} onDoubleClick={onSelectDefaultRoot} title="双击切换">
+              <button onDoubleClick={onSelectDefaultRoot}>默认本地缓存</button>
+            </div>
+            {projectRoots.map((root) => (
+              <div key={root.rootName} className={root.rootName === projectRootName ? "project-root-item active" : "project-root-item"} onDoubleClick={() => onSelectRoot(root)} title="双击切换">
+                <button onDoubleClick={() => onSelectRoot(root)}>{root.rootName}</button>
+                <button className="icon-danger-button" onClick={() => onRequestRemoveRoot(root)} title="移除授权">
+                  <X size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
+          <button className="primary-button" onClick={onOpenCreateProject}>
+            <Plus size={16} />
+            新建项目
+          </button>
+        </article>
+
+        <article className="panel project-current-panel">
+          <div className="panel-title">
+            <Database size={18} />
+            <span>当前项目</span>
+          </div>
+          <div className="project-current-card">
+            <strong>{activeProject?.name ?? "无项目"}</strong>
+            <span>文件夹：{activeProject?.folderName ?? toSafeFolderName(activeProject?.name ?? "未命名项目")}</span>
+            <span>更新：{activeProject ? new Date(activeProject.updatedAt).toLocaleString("zh-CN", { hour12: false }) : "-"}</span>
+          </div>
+        </article>
+      </section>
+
+      <section className="panel">
+        <div className="panel-title">
+          <Edit3 size={18} />
+          <span>项目基本参数</span>
+        </div>
+        <div className="project-options-grid">
+          <label>
+            题材
+            <input value={options.genreProfile} onChange={(event) => onOptionsChange({ ...options, genreProfile: event.target.value })} />
+          </label>
+          <label>
+            导演风格
+            <input value={options.directorProfile} onChange={(event) => onOptionsChange({ ...options, directorProfile: event.target.value })} />
+          </label>
+          <label>
+            种类
+            <select value={options.contentType} onChange={(event) => onOptionsChange({ ...options, contentType: event.target.value })}>
+              <option value="电影">电影</option>
+              <option value="短剧">短剧</option>
+              <option value="中剧">中剧</option>
+              <option value="短片">短片</option>
+              <option value="广告">广告</option>
+            </select>
+          </label>
+          <label>
+            画幅
+            <select value={options.aspectRatio} onChange={(event) => onOptionsChange({ ...options, aspectRatio: event.target.value })}>
+              <option value="9:16">9:16 竖屏</option>
+              <option value="16:9">16:9 横屏</option>
+              <option value="1:1">1:1 方形</option>
+              <option value="4:3">4:3</option>
+              <option value="2.39:1">2.39:1 宽银幕</option>
+            </select>
+          </label>
+          <label>
+            单镜目标秒数
+            <input
+              type="number"
+              min="3"
+              max="12"
+              value={options.targetShotSeconds}
+              onChange={(event) => onOptionsChange({ ...options, targetShotSeconds: Number(event.target.value) })}
+            />
+          </label>
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-title project-list-title">
+          <div>
+            <ClipboardList size={18} />
+            <span>项目列表</span>
+            <strong>{projects.length}</strong>
+          </div>
+          <div className="mode-switch compact" aria-label="项目显示模式">
+            <button className={isCardMode ? "active" : ""} onClick={() => setDisplayMode("cards")}>
+              卡片
+            </button>
+            <button className={!isCardMode ? "active" : ""} onClick={() => setDisplayMode("list")}>
+              列表
+            </button>
+          </div>
+        </div>
+        <div className={isCardMode ? "project-table project-card-grid" : "project-table"}>
+          {projects.length === 0 ? (
+            <div className="empty-state">当前根目录下没有项目。点击“新建项目”创建第一个项目文件夹。</div>
+          ) : (
+            projects.map((project) => (
+              <ProjectListItem
+                key={project.projectId}
+                project={project}
+                isActive={project.projectId === activeProjectId}
+                displayMode={isCardMode ? "cards" : "list"}
+                onSelectProject={onSelectProject}
+                onRequestDeleteProject={onRequestDeleteProject}
+              />
+            ))
+          )}
+        </div>
+      </section>
+    </section>
+  );
+}
+
+function ProjectListItem({
+  project,
+  isActive,
+  displayMode,
+  onSelectProject,
+  onRequestDeleteProject,
+}: {
+  project: StoryboardProject;
+  isActive: boolean;
+  displayMode: "cards" | "list";
+  onSelectProject: (projectId: string) => void;
+  onRequestDeleteProject: (project: StoryboardProject) => void;
+}) {
+  const episodeCount = project.analysis.episodes.length;
+  const assetCount = project.analysis.episodes.reduce((sum, episode) => sum + episode.assets.length, 0);
+  const shotCount = project.analysis.episodes.reduce((sum, episode) => sum + episode.shots.length, 0);
+  const folderName = project.folderName ?? toSafeFolderName(project.name);
+  const updatedAt = new Date(project.updatedAt).toLocaleString("zh-CN", { hour12: false });
+
+  if (displayMode === "cards") {
+    return (
+      <article className={isActive ? "project-card active" : "project-card"}>
+        <button className="project-card-main" onClick={() => onSelectProject(project.projectId)}>
+          <span>{isActive ? "当前项目" : "项目"}</span>
+          <strong>{project.name}</strong>
+          <small>{folderName}</small>
+        </button>
+        <div className="project-card-metrics">
+          <span>{episodeCount} 集</span>
+          <span>{assetCount} 资产</span>
+          <span>{shotCount} 镜头</span>
+        </div>
+        <div className="project-card-foot">
+          <small>{updatedAt}</small>
+          <button className="icon-danger-button" onClick={() => onRequestDeleteProject(project)} title="删除项目">
+            <Trash2 size={16} />
+          </button>
+        </div>
+      </article>
+    );
+  }
+
+  return (
+    <div className={isActive ? "project-table-row active" : "project-table-row"}>
+      <button onClick={() => onSelectProject(project.projectId)}>
+        <strong>{project.name}</strong>
+        <span>{folderName}</span>
+        <span>{episodeCount} 集 / {assetCount} 资产 / {shotCount} 镜头</span>
+        <small>{updatedAt}</small>
+      </button>
+      <button className="icon-danger-button" onClick={() => onRequestDeleteProject(project)} title="删除项目">
+        <Trash2 size={16} />
+      </button>
+    </div>
+  );
+}
+
+function ProjectNameDialog({
+  value,
+  defaultName,
+  onChange,
+  onCancel,
+  onConfirm,
+}: {
+  value: string;
+  defaultName: string;
+  onChange: (value: string) => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="新建项目">
+      <article className="modal-panel">
+        <div className="panel-title">
+          <FolderKanban size={18} />
+          <span>新建项目</span>
+        </div>
+        <label>
+          项目名称
+          <input value={value} onChange={(event) => onChange(event.target.value)} placeholder={`默认：${defaultName}`} autoFocus />
+        </label>
+        <div className="modal-actions">
+          <button onClick={onCancel}>取消</button>
+          <button className="primary-button" onClick={onConfirm}>
+            <CheckCircle2 size={16} />
+            确认
+          </button>
+        </div>
+      </article>
+    </div>
+  );
+}
+
+function ProjectRootDialog({
+  value,
+  onChange,
+  onCancel,
+  onConfirm,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="配置项目根目录">
+      <article className="modal-panel">
+        <div className="panel-title">
+          <FolderKanban size={18} />
+          <span>配置项目根目录</span>
+        </div>
+        <label>
+          本地路径
+          <input value={value} onChange={(event) => onChange(event.target.value)} placeholder="/Users/你的名字/Projects/storyboard" autoFocus />
+        </label>
+        <p className="modal-copy">这是本地后端读取的路径。保存后刷新不会再丢授权。</p>
+        <div className="modal-actions">
+          <button onClick={onCancel}>取消</button>
+          <button className="primary-button" onClick={onConfirm}>
+            <CheckCircle2 size={16} />
+            确认
+          </button>
+        </div>
+      </article>
+    </div>
+  );
+}
+
+function DeleteProjectDialog({
+  project,
+  onCancel,
+  onConfirm,
+}: {
+  project: StoryboardProject;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="删除项目">
+      <article className="modal-panel">
+        <div className="panel-title danger-title">
+          <Trash2 size={18} />
+          <span>删除项目</span>
+        </div>
+        <p className="modal-copy">确认删除“{project.name}”？项目会从当前列表移除；如果已授权根目录，系统会尝试删除对应项目文件夹。</p>
+        <div className="modal-actions">
+          <button onClick={onCancel}>取消</button>
+          <button className="danger-button" onClick={onConfirm}>
+            <Trash2 size={16} />
+            删除
+          </button>
+        </div>
+      </article>
+    </div>
+  );
+}
+
+function RemoveRootDialog({
+  root,
+  onCancel,
+  onConfirm,
+}: {
+  root: BackendRoot;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="移除根目录授权">
+      <article className="modal-panel">
+        <div className="panel-title danger-title">
+          <X size={18} />
+          <span>移除根目录授权</span>
+        </div>
+        <p className="modal-copy">确认移除“{root.rootName}”的授权？只会从当前系统授权列表移除，不会删除该目录下的项目文件夹。</p>
+        <div className="modal-actions">
+          <button onClick={onCancel}>取消</button>
+          <button className="danger-button" onClick={onConfirm}>
+            <X size={16} />
+            移除授权
+          </button>
+        </div>
+      </article>
+    </div>
+  );
+}
+
+function ScriptRuleConfigDialog({
+  rules,
+  onChange,
+  onClose,
+}: {
+  rules: ScriptQualityRule[];
+  onChange: (rules: ScriptQualityRule[]) => void;
+  onClose: () => void;
+}) {
+  const [activeRuleTab, setActiveRuleTab] = useState<"quality" | "episode">("quality");
+
+  function updateRule(ruleId: string, patch: Partial<ScriptQualityRule>) {
+    onChange(rules.map((rule) => (rule.id === ruleId ? { ...rule, ...patch } : rule)));
+  }
+
+  function addRule() {
+    onChange([
+      ...rules,
+      {
+        id: `custom-${Date.now()}`,
+        name: "自定义规则",
+        category: "自定义",
+        level: "提示",
+        description: "描述要提示给校检任务的疑点边界。",
+        enabled: true,
+      },
+    ]);
+  }
+
+  return (
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="校检规则配置">
+      <article className="modal-panel script-rule-modal">
+        <div className="drawer-header">
+          <div className="panel-title">
+            <Edit3 size={18} />
+            <span>校检规则配置</span>
+          </div>
+          <button onClick={onClose} title="关闭">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="rule-tabs mode-switch">
+          <button className={activeRuleTab === "quality" ? "active" : ""} onClick={() => setActiveRuleTab("quality")}>
+            校检规则
+          </button>
+          <button className={activeRuleTab === "episode" ? "active" : ""} onClick={() => setActiveRuleTab("episode")}>
+            分集规则
+          </button>
+        </div>
+        {activeRuleTab === "quality" ? (
+          <>
+            <p className="modal-copy">规则用于提示校检边界：基础标点、场次标记、名称一致性、断行等明显疑点；不做剧情改写。</p>
+            <div className="script-rule-list">
+              {rules.map((rule) => (
+                <article key={rule.id} className="script-rule-item">
+                  <label className="rule-enabled">
+                    <input type="checkbox" checked={rule.enabled} onChange={(event) => updateRule(rule.id, { enabled: event.target.checked })} />
+                    启用
+                  </label>
+                  <label>
+                    规则名
+                    <input value={rule.name} onChange={(event) => updateRule(rule.id, { name: event.target.value })} />
+                  </label>
+                  <label>
+                    类别
+                    <input value={rule.category} onChange={(event) => updateRule(rule.id, { category: event.target.value })} />
+                  </label>
+                  <label>
+                    等级
+                    <select value={rule.level} onChange={(event) => updateRule(rule.id, { level: event.target.value as ScriptQualityRule["level"] })}>
+                      <option value="错误">错误</option>
+                      <option value="警告">警告</option>
+                      <option value="提示">提示</option>
+                    </select>
+                  </label>
+                  <label className="rule-description">
+                    规则说明
+                    <textarea value={rule.description} onChange={(event) => updateRule(rule.id, { description: event.target.value })} />
+                  </label>
+                </article>
+              ))}
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="modal-copy">分集规则用于识别合集剧本中每一集的开始位置。整体导入后的预览窗口可填写临时自定义规则并重新分集。</p>
+            <div className="episode-rule-list">
+              {defaultEpisodeSplitRules.map((rule, index) => (
+                <article key={rule}>
+                  <strong>规则 {index + 1}</strong>
+                  <code>{rule}</code>
+                </article>
+              ))}
+            </div>
+          </>
+        )}
+        <div className="modal-actions">
+          {activeRuleTab === "quality" && (
+            <>
+              <button onClick={addRule}>
+                <Plus size={16} />
+                添加规则
+              </button>
+              <button onClick={() => onChange(defaultScriptQualityRules)}>
+                <RefreshCcw size={16} />
+                读取默认
+              </button>
+            </>
+          )}
+          <button className="primary-button" onClick={onClose}>
+            <CheckCircle2 size={16} />
+            完成
+          </button>
+        </div>
+      </article>
     </div>
   );
 }
@@ -717,74 +1561,104 @@ function DevLogPanel({
 
 function ScriptWorkspace({
   script,
-  genreProfile,
-  directorProfile,
-  targetShotSeconds,
   report,
+  rules,
   onScriptChange,
-  onGenreChange,
-  onDirectorChange,
-  onTargetShotSecondsChange,
   onFileUpload,
-  onGenerate,
+  onEpisodeFileUpload,
+  onBatchEpisodeUpload,
+  onRunScriptCheck,
+  onOpenRuleConfig,
   onApplyCleanedScript,
 }: {
   script: string;
-  genreProfile: string;
-  directorProfile: string;
-  targetShotSeconds: number;
   report: ReturnType<typeof buildScriptQualityReport>;
+  rules: ScriptQualityRule[];
   onScriptChange: (value: string) => void;
-  onGenreChange: (value: string) => void;
-  onDirectorChange: (value: string) => void;
-  onTargetShotSecondsChange: (value: number) => void;
   onFileUpload: (file: File | undefined) => Promise<void>;
-  onGenerate: () => void | Promise<void>;
+  onEpisodeFileUpload: (file: File | undefined, mode: "append" | "replace", episodeNumber: number) => Promise<void>;
+  onBatchEpisodeUpload: (files: FileList | null) => Promise<void>;
+  onRunScriptCheck: () => void;
+  onOpenRuleConfig: () => void;
   onApplyCleanedScript: () => void;
 }) {
+  const errorCount = report.issues.filter((issue) => issue.level === "错误").length;
+  const warningCount = report.issues.filter((issue) => issue.level === "警告").length;
+  const enabledRuleCount = rules.filter((rule) => rule.enabled).length;
+  const [episodeImportMode, setEpisodeImportMode] = useState<"append" | "replace" | "batch">("append");
+  const [episodeNumberDraft, setEpisodeNumberDraft] = useState(1);
+
   return (
     <section className="page-stack">
-      <div className="page-header work-header">
-        <div>
-          <h2>剧本校验</h2>
-          <p>先确认 LLM 的信息源头可靠，再进入资产和分镜生成。</p>
+      <div className="script-check-top panel">
+        <div className="script-check-status">
+          <div>
+            <h2>剧本校检</h2>
+            <p>边界：只提示基础格式和明显疑点，不重写剧情，不替代人工校对。</p>
+          </div>
+          <div className="script-check-metrics">
+            <Metric icon={<FileText size={18} />} label="字数" value={report.stats.characters} />
+            <Metric icon={<Layers3 size={18} />} label="集数" value={report.stats.episodes} />
+            <Metric icon={<AlertTriangle size={18} />} label="疑点" value={report.issues.length} />
+            <Metric icon={<CheckCircle2 size={18} />} label="启用规则" value={enabledRuleCount} />
+          </div>
         </div>
-        <div className="header-actions">
+        <div className="script-check-actions">
           <label className="file-button">
             <Upload size={16} />
-            导入剧本
+            整体导入
             <input type="file" accept=".txt,.md" onChange={(event) => void onFileUpload(event.target.files?.[0])} />
           </label>
-          <button className="primary-button" onClick={() => void onGenerate()}>
-            <Play size={16} />
-            生成草稿
+          <div className="single-episode-import">
+            <select value={episodeImportMode} onChange={(event) => setEpisodeImportMode(event.target.value as "append" | "replace" | "batch")}>
+              <option value="append">增加一集</option>
+              <option value="replace">导入某集</option>
+              <option value="batch">批量导入</option>
+            </select>
+            {episodeImportMode === "replace" && (
+              <input
+                type="number"
+                min="1"
+                value={episodeNumberDraft}
+                onChange={(event) => setEpisodeNumberDraft(Number(event.target.value) || 1)}
+                aria-label="集数"
+              />
+            )}
+            <label className="file-button">
+              <Upload size={16} />
+              单集导入
+              <input
+                type="file"
+                accept=".txt,.md"
+                multiple={episodeImportMode === "batch"}
+                onChange={(event) =>
+                  episodeImportMode === "batch"
+                    ? void onBatchEpisodeUpload(event.target.files)
+                    : void onEpisodeFileUpload(event.target.files?.[0], episodeImportMode, episodeNumberDraft)
+                }
+              />
+            </label>
+          </div>
+          <button onClick={onRunScriptCheck}>
+            <CheckCircle2 size={16} />
+            执行校检
           </button>
+          <button onClick={onApplyCleanedScript}>
+            <Save size={16} />
+            校检保存
+          </button>
+          <button onClick={onOpenRuleConfig}>
+            <Edit3 size={16} />
+            规则配置
+          </button>
+        </div>
+        <div className="script-check-options">
+          <span>{errorCount} 错误 / {warningCount} 警告</span>
         </div>
       </div>
 
-      <div className="control-grid script-control-grid">
-        <label>
-          题材
-          <input value={genreProfile} onChange={(event) => onGenreChange(event.target.value)} />
-        </label>
-        <label>
-          导演风格
-          <input value={directorProfile} onChange={(event) => onDirectorChange(event.target.value)} />
-        </label>
-        <label>
-          单镜目标秒数
-          <input
-            type="number"
-            min="3"
-            max="12"
-            value={targetShotSeconds}
-            onChange={(event) => onTargetShotSecondsChange(Number(event.target.value))}
-          />
-        </label>
-      </div>
-
-      <div className="script-work-grid">
-        <div className="script-card">
+      <div className="script-review-grid">
+        <section className="script-card panel">
           <div className="panel-title">
             <FileText size={18} />
             <span>原始剧本</span>
@@ -794,13 +1668,10 @@ function ScriptWorkspace({
             value={script}
             onChange={(event) => onScriptChange(event.target.value)}
             spellCheck={false}
-            placeholder="粘贴全集剧本，可包含第1集、第2集等标记。"
+            placeholder="粘贴或导入剧本。"
           />
-        </div>
-        <ScriptQualityView
-          report={report}
-          onApplyCleanedScript={onApplyCleanedScript}
-        />
+        </section>
+        <ScriptQualityView report={report} />
       </div>
     </section>
   );
@@ -819,7 +1690,6 @@ function ToolDrawer({
   onCreateProject,
   onSelectProject,
   onSaveProject,
-  onRestoreVersion,
   onGenerate,
   onExportAll,
 }: {
@@ -835,7 +1705,6 @@ function ToolDrawer({
   onCreateProject: () => void;
   onSelectProject: (projectId: string) => void;
   onSaveProject: () => void;
-  onRestoreVersion: (versionId: string) => void;
   onGenerate: () => void | Promise<void>;
   onExportAll: () => Promise<void>;
 }) {
@@ -883,7 +1752,7 @@ function ToolDrawer({
             </button>
             <button onClick={onSaveProject}>
               <Save size={16} />
-              保存版本
+              保存项目
             </button>
           </div>
           <div className="project-list">
@@ -894,17 +1763,8 @@ function ToolDrawer({
                 onClick={() => onSelectProject(project.projectId)}
               >
                 <strong>{project.name}</strong>
-                <span>{project.versions[0]?.summary ?? "未保存"}</span>
+                <span>{project.analysis.episodes.length} 集 / {project.analysis.episodes.reduce((sum, episode) => sum + episode.assets.length, 0)} 资产</span>
                 <small>{new Date(project.updatedAt).toLocaleString("zh-CN", { hour12: false })}</small>
-              </button>
-            ))}
-          </div>
-          <div className="version-list">
-            <strong>版本</strong>
-            {projects.find((project) => project.projectId === activeProjectId)?.versions.map((version) => (
-              <button key={version.versionId} onClick={() => onRestoreVersion(version.versionId)}>
-                <span>{version.name}</span>
-                <small>{version.summary}</small>
               </button>
             ))}
           </div>
@@ -954,55 +1814,114 @@ function ToolDrawer({
   );
 }
 
-function ScriptQualityView({
-  report,
-  onApplyCleanedScript,
-}: {
-  report: ReturnType<typeof buildScriptQualityReport>;
-  onApplyCleanedScript: () => void;
-}) {
+function ScriptQualityView({ report }: { report: ReturnType<typeof buildScriptQualityReport> }) {
+  const issueLines = new Set(report.issues.map((issue) => issue.line));
+  const cleanedLines = report.cleanedScript.split("\n");
+
   return (
-    <section className="page-stack">
-      <div className="summary-strip">
-        <Metric icon={<FileText size={18} />} label="有效行" value={report.stats.lines} />
-        <Metric icon={<Layers3 size={18} />} label="集数" value={report.stats.episodes} />
-        <Metric icon={<AlertTriangle size={18} />} label="疑点" value={report.issues.length} />
-      </div>
-      <div className="split-review">
-        <div className="panel">
-          <div className="panel-title">
-            <CheckCircle2 size={18} />
-            <span>格式清洗稿</span>
-            <button onClick={onApplyCleanedScript}>写回剧本</button>
-          </div>
-          <pre className="clean-script-preview">{report.cleanedScript}</pre>
+    <>
+      <section className="script-card panel">
+        <div className="panel-title">
+          <CheckCircle2 size={18} />
+          <span>校检剧本</span>
+          <strong>{report.cleanedScript.length.toLocaleString()} 字</strong>
         </div>
-        <div className="panel">
-          <div className="panel-title">
-            <AlertTriangle size={18} />
-            <span>审校疑点</span>
-          </div>
-          <div className="issue-list">
-            {report.issues.length === 0 ? (
-              <div className="empty-state">暂未发现明显格式疑点。</div>
-            ) : (
-              report.issues.map((issue) => (
-                <article key={issue.id} className="issue-item">
-                  <header>
-                    <strong>{issue.category}</strong>
-                    <span>{issue.level}</span>
-                  </header>
-                  <p>{issue.message}</p>
-                  <small>
-                    第 {issue.line} 行：{issue.excerpt}
-                  </small>
-                </article>
-              ))
-            )}
-          </div>
+        <div className="clean-script-preview">
+          {cleanedLines.map((line, index) => (
+            <div key={`${index}-${line}`} className={issueLines.has(index + 1) ? "clean-line issue-highlight" : "clean-line"}>
+              <span>{index + 1}</span>
+              <p>{line || " "}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+      <div className="panel script-issue-panel">
+        <div className="panel-title">
+          <AlertTriangle size={18} />
+          <span>审校疑点</span>
+          <strong>{report.issues.length}</strong>
+        </div>
+        <div className="issue-list">
+          {report.issues.length === 0 ? (
+            <div className="empty-state">暂未发现明显格式疑点。</div>
+          ) : (
+            report.issues.map((issue) => (
+              <article key={issue.id} className="issue-item">
+                <header>
+                  <strong>{issue.category}</strong>
+                  <span>{issue.level}</span>
+                </header>
+                <p>{issue.message}</p>
+                <small>
+                  第 {issue.line} 行：{issue.excerpt}
+                </small>
+              </article>
+            ))
+          )}
         </div>
       </div>
-    </section>
+    </>
+  );
+}
+
+function EpisodeSplitPreviewDialog({
+  draft,
+  onRuleChange,
+  onConfirm,
+  onClose,
+}: {
+  draft: EpisodeSplitDraft;
+  onRuleChange: (value: string) => void;
+  onConfirm: () => void;
+  onClose: () => void;
+}) {
+  const [ruleDraft, setRuleDraft] = useState(draft.customRule);
+  const previewText = draft.preview.episodes
+    .map((episode) => episode.text)
+    .join("\n\n==========\n==========\n\n");
+
+  useEffect(() => {
+    setRuleDraft(draft.customRule);
+  }, [draft.customRule]);
+
+  return (
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="分集预览">
+      <article className="modal-panel episode-preview-modal">
+        <div className="episode-preview-header">
+          <div>
+            <h2>分集预览</h2>
+            <p>{draft.fileName} / {draft.preview.episodes.length} 集 / {draft.sourceText.length.toLocaleString()} 字</p>
+          </div>
+          <div className="episode-preview-actions">
+            <button onClick={() => onRuleChange(ruleDraft)}>
+              <RefreshCcw size={16} />
+              重新分集
+            </button>
+            <button className="primary-button" onClick={onConfirm}>
+              <CheckCircle2 size={16} />
+              确认分集
+            </button>
+            <button onClick={onClose} title="关闭">
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+        <div className="episode-preview-rule-row">
+          <label>
+            自定义分集规则
+            <input value={ruleDraft} onChange={(event) => setRuleDraft(event.target.value)} placeholder="例如：^第\\d+话" />
+          </label>
+          {draft.preview.warnings.length > 0 && (
+            <div className="episode-split-warnings">
+              {draft.preview.warnings.slice(0, 3).map((warning) => (
+                <span key={warning}>{warning}</span>
+              ))}
+            </div>
+          )}
+        </div>
+        <textarea className="episode-preview-text" value={previewText} readOnly spellCheck={false} />
+      </article>
+    </div>
   );
 }
 
@@ -2098,6 +3017,128 @@ function Metric({ icon, label, value }: { icon: ReactNode; label: string; value:
       <strong>{value.toLocaleString()}</strong>
     </div>
   );
+}
+
+interface EpisodeSplitItem {
+  episodeNumber: number;
+  title: string;
+  text: string;
+}
+
+interface EpisodeSplitPreviewData {
+  episodes: EpisodeSplitItem[];
+  warnings: string[];
+}
+
+interface EpisodeSplitDraft {
+  fileName: string;
+  sourceText: string;
+  customRule: string;
+  preview: EpisodeSplitPreviewData;
+}
+
+const defaultEpisodeSplitRules = [
+  "^\\s*第\\s*([0-9０-９]+)\\s*集(?:\\s+.*)?$",
+  "^\\s*第\\s*([一二三四五六七八九十百零〇两]+)\\s*集(?:\\s+.*)?$",
+  "^\\s*第\\s*([0-9０-９]+)\\s*话(?:\\s+.*)?$",
+  "^\\s*第\\s*([一二三四五六七八九十百零〇两]+)\\s*话(?:\\s+.*)?$",
+  "^\\s*EP\\s*([0-9０-９]+)(?:\\s+.*)?$",
+  "^\\s*E\\s*([0-9０-９]+)(?:\\s+.*)?$",
+  "^\\s*Episode\\s*([0-9０-９]+)(?:\\s+.*)?$",
+  "^\\s*([0-9０-９]+)\\s*[\\.、-]?\\s*集(?:\\s+.*)?$",
+];
+
+function splitScriptIntoEpisodes(script: string, customRule: string): EpisodeSplitPreviewData {
+  const normalized = script.replace(/\r\n?/g, "\n").trim();
+  if (!normalized) return { episodes: [], warnings: ["当前没有剧本文本。"] };
+
+  const ruleTexts = [...defaultEpisodeSplitRules, customRule.trim()].filter(Boolean);
+  const rules = ruleTexts.flatMap((ruleText) => {
+    try {
+      return [new RegExp(ruleText, "i")];
+    } catch {
+      return [];
+    }
+  });
+  const lines = normalized.split("\n");
+  const starts: Array<{ lineIndex: number; title: string; episodeNumber: number }> = [];
+
+  lines.forEach((line, lineIndex) => {
+    for (const rule of rules) {
+      const match = line.match(rule);
+      if (!match) continue;
+      const episodeNumber = parseEpisodeMarkerNumber(match[1]) || starts.length + 1;
+      starts.push({ lineIndex, title: line.trim(), episodeNumber });
+      return;
+    }
+  });
+
+  if (!starts.length) {
+    return {
+      episodes: [{ episodeNumber: 1, title: "未识别分集标记", text: normalized }],
+      warnings: ["未识别到分集开始标记，请添加自定义分集规则后重新预览。"],
+    };
+  }
+
+  const episodes = starts.map((start, index) => {
+    const endLineIndex = starts[index + 1]?.lineIndex ?? lines.length;
+    return {
+      episodeNumber: start.episodeNumber,
+      title: start.title,
+      text: lines.slice(start.lineIndex, endLineIndex).join("\n").trim(),
+    };
+  });
+  const warnings = buildEpisodeSplitWarnings(episodes);
+  return { episodes, warnings };
+}
+
+function buildEpisodeSplitWarnings(episodes: EpisodeSplitItem[]) {
+  const warnings: string[] = [];
+  episodes.forEach((episode, index) => {
+    const expected = index + 1;
+    if (episode.episodeNumber !== expected) {
+      warnings.push(`第 ${expected} 段识别为 EP${String(episode.episodeNumber).padStart(2, "0")}，可能存在缺集或标记异常。`);
+    }
+    if (episode.text.length < 80) {
+      warnings.push(`${episode.title} 文本较短，建议复核是否切分错误。`);
+    }
+  });
+  return warnings;
+}
+
+function parseEpisodeMarkerNumber(value: string | undefined) {
+  if (!value) return 0;
+  const normalized = value.replace(/[０-９]/g, (char) => String.fromCharCode(char.charCodeAt(0) - 0xfee0));
+  if (/^\d+$/.test(normalized)) return Number(normalized);
+  return chineseNumberToInt(normalized);
+}
+
+function chineseNumberToInt(value: string): number {
+  const digits: Record<string, number> = { 零: 0, 〇: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+  if (value === "十") return 10;
+  const hundredIndex = value.indexOf("百");
+  if (hundredIndex >= 0) {
+    const hundreds = digits[value[hundredIndex - 1]] || 1;
+    return hundreds * 100 + chineseNumberToInt(value.slice(hundredIndex + 1));
+  }
+  const tenIndex = value.indexOf("十");
+  if (tenIndex >= 0) {
+    const tens = tenIndex === 0 ? 1 : digits[value[tenIndex - 1]] || 1;
+    const ones = digits[value[tenIndex + 1]] || 0;
+    return tens * 10 + ones;
+  }
+  return digits[value] ?? 0;
+}
+
+function ensureEpisodeHeading(text: string, episodeNumber: number) {
+  const trimmed = text.trim();
+  const preview = splitScriptIntoEpisodes(trimmed, "");
+  if (preview.episodes.length === 1 && preview.episodes[0]?.title !== "未识别分集标记") return trimmed;
+  return `第${episodeNumber}集\n${trimmed}`;
+}
+
+function formatEpisodeSplitPreview(preview: EpisodeSplitPreviewData) {
+  return preview.episodes.map((episode) => episode.text.trim()).filter(Boolean).join("\n\n");
 }
 
 async function downloadZip(filename: string, zip: JSZip) {

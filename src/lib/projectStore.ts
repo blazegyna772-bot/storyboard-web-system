@@ -7,26 +7,11 @@ import type { PipelineRun } from "../pipeline/types";
 
 const storeKey = "storyboard-project-store-v1";
 
-export interface ProjectVersion {
-  versionId: string;
-  name: string;
-  createdAt: string;
-  summary: string;
-  snapshot: {
-    script: string;
-    options: AnalysisOptions;
-    analysis: ScriptAnalysis;
-    latestRun: PipelineRun | null;
-    artifacts: ArtifactRecord[];
-    locks: LockRecord[];
-    tasks: TaskRecord[];
-    imageCandidates: AssetImageCandidate[];
-  };
-}
-
 export interface StoryboardProject {
   projectId: string;
   name: string;
+  folderName?: string;
+  rootName?: string;
   updatedAt: string;
   script: string;
   options: AnalysisOptions;
@@ -36,7 +21,6 @@ export interface StoryboardProject {
   locks: LockRecord[];
   tasks: TaskRecord[];
   imageCandidates: AssetImageCandidate[];
-  versions: ProjectVersion[];
 }
 
 export interface ProjectStoreState {
@@ -69,6 +53,8 @@ export function loadProjectStore(fallbackScript: string, fallbackOptions: Analys
             const bundle = buildArtifactBundle(project.script, project.analysis);
             return {
               ...project,
+              options: normalizeAnalysisOptions(project.options, fallbackOptions),
+              folderName: project.folderName ?? toSafeFolderName(project.name),
               artifacts: project.artifacts ?? bundle.artifacts,
               locks: project.locks ?? bundle.locks,
               tasks: project.tasks ?? bundle.tasks,
@@ -107,6 +93,7 @@ export function createProject(input: Omit<ProjectSnapshotInput, "projectId">): S
   const project: StoryboardProject = {
     projectId: createId("PRJ"),
     name: input.name,
+    folderName: toSafeFolderName(input.name),
     updatedAt: now,
     script: input.script,
     options: input.options,
@@ -116,9 +103,8 @@ export function createProject(input: Omit<ProjectSnapshotInput, "projectId">): S
     locks: input.locks ?? bundle.locks,
     tasks: input.tasks ?? bundle.tasks,
     imageCandidates: input.imageCandidates ?? [],
-    versions: [],
   };
-  return addProjectVersion(project, "初始版本");
+  return project;
 }
 
 export function updateProjectSnapshot(project: StoryboardProject, input: ProjectSnapshotInput): StoryboardProject {
@@ -137,50 +123,27 @@ export function updateProjectSnapshot(project: StoryboardProject, input: Project
   };
 }
 
-export function addProjectVersion(project: StoryboardProject, versionName: string): StoryboardProject {
-  return {
-    ...project,
-    updatedAt: new Date().toISOString(),
-    versions: [createVersion(versionName, project), ...project.versions].slice(0, 30),
-  };
-}
-
-export function restoreProjectVersion(project: StoryboardProject, versionId: string): StoryboardProject {
-  const version = project.versions.find((item) => item.versionId === versionId);
-  if (!version) return project;
-  return {
-    ...project,
-    updatedAt: new Date().toISOString(),
-    script: version.snapshot.script,
-    options: version.snapshot.options,
-    analysis: version.snapshot.analysis,
-    latestRun: version.snapshot.latestRun,
-    artifacts: version.snapshot.artifacts,
-    locks: version.snapshot.locks,
-    tasks: version.snapshot.tasks,
-    imageCandidates: version.snapshot.imageCandidates ?? [],
-  };
-}
-
-export function createVersion(name: string, project: StoryboardProject): ProjectVersion {
-  return {
-    versionId: createId("VER"),
-    name,
-    createdAt: new Date().toISOString(),
-    summary: `${project.analysis.episodes.length} 集 / ${project.analysis.episodes.reduce((sum, episode) => sum + episode.assets.length, 0)} 资产 / ${project.analysis.episodes.reduce((sum, episode) => sum + episode.shots.length, 0)} 镜头`,
-    snapshot: {
-      script: project.script,
-      options: project.options,
-      analysis: project.analysis,
-      latestRun: project.latestRun,
-      artifacts: project.artifacts,
-      locks: project.locks,
-      tasks: project.tasks,
-      imageCandidates: project.imageCandidates,
-    },
-  };
-}
-
 function createId(prefix: string) {
   return `${prefix}-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(16).slice(2, 6).toUpperCase()}`;
+}
+
+function normalizeAnalysisOptions(options: AnalysisOptions | undefined, fallback: AnalysisOptions): AnalysisOptions {
+  return {
+    genreProfile: options?.genreProfile ?? fallback.genreProfile,
+    directorProfile: options?.directorProfile ?? fallback.directorProfile,
+    targetShotSeconds: options?.targetShotSeconds ?? fallback.targetShotSeconds,
+    aspectRatio: options?.aspectRatio ?? fallback.aspectRatio,
+    contentType: options?.contentType ?? fallback.contentType,
+  };
+}
+
+export function createDefaultProjectName(existingCount: number) {
+  const now = new Date();
+  const date = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`;
+  return `${date}-${String(existingCount + 1).padStart(3, "0")}`;
+}
+
+export function toSafeFolderName(value: string) {
+  const cleaned = value.trim().replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, " ");
+  return cleaned || createDefaultProjectName(0);
 }

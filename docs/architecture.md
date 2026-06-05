@@ -13,6 +13,51 @@
 - Adapter 是输出格式
 - LLM/图像模型是某些 stage 的执行器
 
+## 后端车架方向
+
+下一阶段从 Vite 插件式临时 API 迁移到独立 Node 后端。
+
+目标结构：
+
+```text
+server/
+  core/
+    project-store
+    pipeline-engine
+    plugin-registry
+    config-loader
+    artifact-store
+    run-logger
+  adapters/
+    llm/
+    image/
+    export/
+  pipelines/
+    script-check/
+    episode-split/
+    asset-extract/
+    storyboard-plan/
+    video-prompt/
+  rulepacks/
+    default/
+  projects/
+```
+
+设计原则：
+
+- 前端只做操作台和审阅界面。
+- 后端负责本地文件系统、项目根目录、管线调度、API 代理、日志和产物。
+- 第三方 API 通过 adapter 接入。
+- Prompt、Schema、分集规则、输出格式通过 rulepack 加载。
+- 新增能力必须优先考虑是否能作为节点、规则包或适配器插入。
+
+开发顺序：
+
+1. 先把现有 `/api/projects/*`、LLM proxy、image proxy 从 `vite.config.js` 抽到 `server/`。
+2. 保持前端 API 路径不变。
+3. 再补 plugin registry / rulepack loader / pipeline registry。
+4. 最后用 Electron 包装前端和本地后端。
+
 ## Pipeline
 
 默认流程：

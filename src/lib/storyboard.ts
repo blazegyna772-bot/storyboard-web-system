@@ -2,6 +2,8 @@ export interface AnalysisOptions {
   genreProfile: string;
   directorProfile: string;
   targetShotSeconds: number;
+  aspectRatio: string;
+  contentType: string;
 }
 
 export interface ScriptAnalysis {

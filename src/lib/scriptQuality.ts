@@ -19,6 +19,84 @@ export interface ScriptQualityReport {
   };
 }
 
+export interface ScriptQualityRule {
+  id: string;
+  name: string;
+  category: string;
+  level: ScriptIssue["level"];
+  description: string;
+  enabled: boolean;
+}
+
+const qualityRulesKey = "script-quality-rules-v1";
+
+export const defaultScriptQualityRules: ScriptQualityRule[] = [
+  {
+    id: "punctuation-pairing",
+    name: "标点配对与重复",
+    category: "标点",
+    level: "提示",
+    description: "检查重复句末标点、引号等基础标点清洗疑点；只提示，不直接改剧情内容。",
+    enabled: true,
+  },
+  {
+    id: "scene-marker-order",
+    name: "场次标记排序",
+    category: "场景",
+    level: "警告",
+    description: "检查疑似场景行缺失地点/时间、场次标记不规范等会影响拆场的信息。",
+    enabled: true,
+  },
+  {
+    id: "name-consistency",
+    name: "剧内名称一致性",
+    category: "角色名",
+    level: "警告",
+    description: "检查明显相近的角色名混用疑点，作为人工复核提示。",
+    enabled: true,
+  },
+  {
+    id: "dialogue-linebreak",
+    name: "对白断行与空内容",
+    category: "对白",
+    level: "错误",
+    description: "检查对白冒号后无内容、角色名与冒号间异常空格等基础断行疑点。",
+    enabled: true,
+  },
+  {
+    id: "episode-marker",
+    name: "分集标记位置",
+    category: "集数",
+    level: "警告",
+    description: "检查集标记没有放在行首等可能影响分集导入和后续处理的问题。",
+    enabled: true,
+  },
+];
+
+export function loadScriptQualityRules(): ScriptQualityRule[] {
+  const raw = localStorage.getItem(qualityRulesKey);
+  if (!raw) return defaultScriptQualityRules;
+  try {
+    const parsed = JSON.parse(raw) as ScriptQualityRule[];
+    if (!Array.isArray(parsed) || !parsed.length) return defaultScriptQualityRules;
+    return parsed.map((rule) => ({
+      id: rule.id || `rule-${Math.random().toString(36).slice(2, 8)}`,
+      name: rule.name || "未命名规则",
+      category: rule.category || "自定义",
+      level: rule.level || "提示",
+      description: rule.description || "",
+      enabled: rule.enabled !== false,
+    }));
+  } catch {
+    localStorage.removeItem(qualityRulesKey);
+    return defaultScriptQualityRules;
+  }
+}
+
+export function saveScriptQualityRules(rules: ScriptQualityRule[]) {
+  localStorage.setItem(qualityRulesKey, JSON.stringify(rules));
+}
+
 export function buildScriptQualityReport(script: string): ScriptQualityReport {
   const normalized = script.replace(/\r\n?/g, "\n").replace(/[ \t]+$/gm, "").trim();
   const lines = normalized.split("\n");
