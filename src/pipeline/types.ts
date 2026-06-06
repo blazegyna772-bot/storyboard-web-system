@@ -109,13 +109,18 @@ export interface LlmCallTrace {
 }
 
 export interface ImageGenerationConfig {
-  mode: "openai-compatible";
-  provider: "openai-compatible";
+  mode: "provider";
+  provider: string;
   model: string;
   baseUrl?: string;
+  runtimeBaseUrl?: string;
   apiKey?: string;
   hasApiKey: boolean;
+  aspectRatio: string;
+  imageSize: string;
   size: string;
+  requestTimeout: number;
+  downloadTimeout: number;
 }
 
 export interface StageResult {

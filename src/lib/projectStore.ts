@@ -50,10 +50,13 @@ export function loadProjectStore(fallbackScript: string, fallbackOptions: Analys
         return {
           ...parsed,
           projects: parsed.projects.map((project) => {
-            const bundle = buildArtifactBundle(project.script, project.analysis);
+            const options = normalizeAnalysisOptions(project.options, fallbackOptions);
+            const analysis = normalizeProjectAnalysis(project.script, project.analysis, options);
+            const bundle = buildArtifactBundle(project.script, analysis);
             return {
               ...project,
-              options: normalizeAnalysisOptions(project.options, fallbackOptions),
+              options,
+              analysis,
               folderName: project.folderName ?? toSafeFolderName(project.name),
               artifacts: project.artifacts ?? bundle.artifacts,
               locks: project.locks ?? bundle.locks,
@@ -120,6 +123,17 @@ export function updateProjectSnapshot(project: StoryboardProject, input: Project
     locks: input.locks ?? project.locks ?? [],
     tasks: input.tasks ?? project.tasks ?? [],
     imageCandidates: input.imageCandidates ?? project.imageCandidates ?? [],
+  };
+}
+
+export function normalizeProjectAnalysis(script: string, analysis: ScriptAnalysis | undefined, options: AnalysisOptions): ScriptAnalysis {
+  const nextAnalysis = analyzeScript(script, options);
+  if (!analysis?.episodes?.length) return nextAnalysis;
+  if (script.trim() && nextAnalysis.episodes.length !== analysis.episodes.length) return nextAnalysis;
+  if (script.trim() && analysis.totalCharacters !== script.trim().length) return nextAnalysis;
+  return {
+    ...analysis,
+    options,
   };
 }
 

@@ -17,7 +17,8 @@ export function loadLlmExecutorConfig(): LlmExecutorConfig {
   const raw = localStorage.getItem(llmConfigStorageKey);
   if (!raw) return defaultLlmExecutorConfig;
   try {
-    return normalizeLlmConfig(JSON.parse(raw) as Partial<LlmExecutorConfig>);
+    const parsed = JSON.parse(raw) as Partial<LlmExecutorConfig>;
+    return normalizeLlmConfig({ ...parsed, apiKey: "", hasApiKey: false });
   } catch {
     localStorage.removeItem(llmConfigStorageKey);
     return defaultLlmExecutorConfig;
@@ -25,7 +26,7 @@ export function loadLlmExecutorConfig(): LlmExecutorConfig {
 }
 
 export function saveLlmExecutorConfig(config: LlmExecutorConfig) {
-  localStorage.setItem(llmConfigStorageKey, JSON.stringify(normalizeLlmConfig(config)));
+  localStorage.setItem(llmConfigStorageKey, JSON.stringify(normalizeLlmConfig({ ...config, apiKey: "" })));
 }
 
 export function normalizeLlmConfig(config: Partial<LlmExecutorConfig>): LlmExecutorConfig {
@@ -35,6 +36,6 @@ export function normalizeLlmConfig(config: Partial<LlmExecutorConfig>): LlmExecu
     ...config,
     mode: "openai-compatible",
     apiKey,
-    hasApiKey: Boolean(apiKey.trim()),
+    hasApiKey: Boolean(apiKey.trim()) || Boolean(config.hasApiKey),
   };
 }

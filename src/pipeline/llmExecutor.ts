@@ -13,6 +13,7 @@ import {
 } from "./schemas";
 import { defaultLlmExecutorConfig } from "./llmConfig";
 import type { LlmCallTrace, LlmExecutorConfig, PipelineLogEntry } from "./types";
+import { backendApiBaseUrl } from "../lib/backendApi";
 
 export interface ExecutorResult<T> {
   artifact: T;
@@ -39,7 +40,7 @@ export async function runP1Executors(script: string, analysis: ScriptAnalysis, c
 }
 
 async function runRealP1Executors(script: string, analysis: ScriptAnalysis, config: LlmExecutorConfig): Promise<P1ExecutorOutput> {
-  if (!config.apiKey?.trim()) throw new Error("DeepSeek API Key 未配置。");
+  if (!config.apiKey?.trim() && !config.hasApiKey) throw new Error("DeepSeek API Key 未配置。");
   const clean = await runRealCleanScript(script, config);
   const episodeSupport: ExecutorResult<EpisodeSupportArtifact>[] = [];
   for (const episode of analysis.episodes) {
@@ -84,7 +85,7 @@ async function runRealJsonStage<T>(
   validate: (value: unknown) => ValidationResult,
 ): Promise<ExecutorResult<T>> {
   const start = performance.now();
-  const response = await fetch("/api/llm/chat", {
+  const response = await fetch(`${backendApiBaseUrl}/api/llm/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -93,6 +94,9 @@ async function runRealJsonStage<T>(
       model: config.model,
       temperature: config.temperature,
       jsonMode: config.jsonMode,
+      stageId: prompt.stageId,
+      label,
+      promptId: prompt.promptId,
       messages: [
         { role: "system", content: prompt.system },
         { role: "user", content: `${prompt.user}\n\n输出契约：${prompt.outputContract}` },
