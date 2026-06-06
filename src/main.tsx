@@ -68,6 +68,16 @@ import {
   backendApiBaseUrl,
 } from "./lib/backendApi";
 import {
+  loadStoryWorkflowState,
+  runStoryWorkflowAll,
+  runStoryWorkflowNode,
+  saveStoryWorkflowArtifact,
+  type StoryWorkflowArtifact,
+  type StoryWorkflowNode,
+  type StoryWorkflowNodeId,
+  type StoryWorkflowState,
+} from "./lib/storyWorkflowApi";
+import {
   clearBackendLlmLogs,
   clearBackendImageLogs,
   getBackendLlmApiKey,
@@ -81,7 +91,12 @@ import {
   listBackendImageTasks,
   listBackendLlmLogs,
   listBackendRulepacks,
+  loadBackendPromptLibrary,
   loadBackendPrompt,
+  createBackendPromptVersion,
+  updateBackendPromptVersion,
+  deleteBackendPromptVersion,
+  activateBackendPromptVersion,
   saveBackendImageSettings,
   saveBackendGeneralSettings,
   saveBackendLlmSettings,
@@ -92,6 +107,9 @@ import {
   type ImageProviderCatalog,
   type BackendLlmLog,
   type BackendRulepack,
+  type BackendPromptLibrary,
+  type BackendPromptTemplateGroup,
+  type BackendPromptVersion,
 } from "./lib/backendStatusApi";
 import {
   createProject,
@@ -110,18 +128,6 @@ import { loadLlmExecutorConfig, normalizeLlmConfig, saveLlmExecutorConfig } from
 import { loadImageGenerationConfig, normalizeImageConfig, saveImageGenerationConfig } from "./pipeline/imageConfig";
 import { generateAssetImage } from "./pipeline/imageGeneration";
 import type { AssetImageCandidate } from "./pipeline/imageGeneration";
-import {
-  createPromptId,
-  duplicatePrompt,
-  loadPromptLibrary,
-  promptStages,
-  savePromptLibrary,
-  selectPrompt,
-  upsertPrompt,
-  type PromptLibraryState,
-  type PromptStageId,
-  type PromptVersion,
-} from "./pipeline/promptLibrary";
 import { runLocalPipeline } from "./pipeline/run";
 import { writeEpisodeToZip, writeProjectToZip } from "./pipeline/exportAdapter";
 import { summarizePipeline } from "./pipeline/summary";
@@ -205,6 +211,10 @@ function App() {
   const [assetReviewBundle, setAssetReviewBundle] = useState<AssetReviewBundle>(emptyAssetReviewBundle);
   const [isAssetReviewDirty, setIsAssetReviewDirty] = useState(false);
   const [runningAssetExtractKind, setRunningAssetExtractKind] = useState<AssetKind | "">("");
+  const [storyWorkflow, setStoryWorkflow] = useState<StoryWorkflowState | null>(null);
+  const [runningStoryNodeId, setRunningStoryNodeId] = useState<StoryWorkflowNodeId | "">("");
+  const [runningStoryBatchLabel, setRunningStoryBatchLabel] = useState("");
+  const [selectedWorkflowSceneId, setSelectedWorkflowSceneId] = useLocalState("selected-workflow-scene", "SC01");
   const [isGenerating, setIsGenerating] = useState(false);
   const [imageConfig, setImageConfig] = useState<ImageGenerationConfig>(() => loadImageGenerationConfig());
   const [runningImageAssetId, setRunningImageAssetId] = useState("");
@@ -233,10 +243,10 @@ function App() {
   const selectedEpisode = analysis.episodes.find((episode) => episode.episodeId === selectedEpisodeId) ?? analysis.episodes[0];
   const isCollapsed = isNavCollapsed === "true";
   const [llmConfig, setLlmConfig] = useState<LlmExecutorConfig>(() => loadLlmExecutorConfig());
-  const [promptLibrary, setPromptLibrary] = useState<PromptLibraryState>(() => loadPromptLibrary());
   const [backendHealth, setBackendHealth] = useState<BackendHealth | null>(null);
   const [generalConfig, setGeneralConfig] = useState<BackendSettings["general"]>({ imageConcurrency: 2 });
   const [backendRulepacks, setBackendRulepacks] = useState<BackendRulepack[]>([]);
+  const [backendPromptLibrary, setBackendPromptLibrary] = useState<BackendPromptLibrary>({ groups: [] });
   const [backendImageProviders, setBackendImageProviders] = useState<ImageProviderCatalog[]>([]);
   const [backendLlmLogs, setBackendLlmLogs] = useState<BackendLlmLog[]>([]);
   const [backendImageLogs, setBackendImageLogs] = useState<BackendImageLog[]>([]);
@@ -252,16 +262,22 @@ function App() {
       isGenerating,
       runningAssetExtractKind,
       runningImageAssetId,
+      runningStoryNodeId,
+      runningStoryBatchLabel,
       imageTasks: backendImageTasks,
       llmLogs: backendLlmLogs,
     }),
-    [isGenerating, runningAssetExtractKind, runningImageAssetId, backendImageTasks, backendLlmLogs],
+    [isGenerating, runningAssetExtractKind, runningImageAssetId, runningStoryNodeId, runningStoryBatchLabel, backendImageTasks, backendLlmLogs],
   );
 
   useEffect(() => {
     void initializeBackendRoots();
     void refreshBackendStatus();
   }, []);
+
+  useEffect(() => {
+    if (activePage === "context") setActivePage("planning");
+  }, [activePage, setActivePage]);
 
   useEffect(() => {
     if (!backendImageTasks.some((task) => task.status === "running")) return;
@@ -472,6 +488,7 @@ function App() {
     if (!root || project.script) {
       applyProject(project);
       void loadAssetReviewForProject(project.projectId);
+      void loadStoryWorkflowForProject(project.projectId);
       return;
     }
     const loadedProject = (await loadBackendProject(project.projectId)).project;
@@ -481,6 +498,22 @@ function App() {
     }));
     applyProject(loadedProject);
     void loadAssetReviewForProject(loadedProject.projectId);
+    void loadStoryWorkflowForProject(loadedProject.projectId);
+  }
+
+  async function loadStoryWorkflowForProject(projectId: string) {
+    if (!projectId) {
+      setStoryWorkflow(null);
+      return;
+    }
+    try {
+      const state = await loadStoryWorkflowState(projectId);
+      setStoryWorkflow(state);
+      appendLog("story-workflow", "info", "分镜阶段状态已读取", `${state.nodes.length} 个节点。`);
+    } catch (error) {
+      setStoryWorkflow(null);
+      appendLog("story-workflow", "warning", "分镜阶段状态读取失败", error instanceof Error ? error.message : "未知错误");
+    }
   }
 
   async function loadAssetReviewForProject(projectId: string) {
@@ -537,12 +570,6 @@ function App() {
         void refreshBackendStatus();
       })
       .catch((error) => appendLog("image-config", "error", "生图配置保存失败", error instanceof Error ? error.message : "未知错误"));
-  }
-
-  function updatePromptLibrary(next: PromptLibraryState, message = "Prompt 配置已更新") {
-    setPromptLibrary(next);
-    savePromptLibrary(next);
-    appendLog("prompt-library", "success", message, "后续 LLM 调用会使用当前选中的 Prompt 版本。");
   }
 
   async function handleGenerateAssetImage(asset: AssetDescription) {
@@ -616,6 +643,89 @@ function App() {
       showToast(`${assetKindLabel(kind)}记录提取失败`);
     } finally {
       setRunningAssetExtractKind("");
+    }
+  }
+
+  async function handleRunStoryWorkflowNode(nodeId: StoryWorkflowNodeId) {
+    if (!activeProject.projectId || runningStoryNodeId || runningStoryBatchLabel) return;
+    setRunningStoryNodeId(nodeId);
+    appendLog("story-workflow", "info", `开始执行 ${nodeId}`, "后端将读取项目剧本、规则包 Prompt 和已存在节点产物。");
+    try {
+      const result = await runStoryWorkflowNode(activeProject.projectId, {
+        nodeId,
+        episodeId: selectedEpisodeId,
+        sceneId: selectedWorkflowSceneId,
+      });
+      setStoryWorkflow((current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          artifacts: {
+            ...current.artifacts,
+            [nodeId]: result.artifact,
+          },
+        };
+      });
+      void refreshBackendStatus();
+      appendLog("story-workflow", "success", `${nodeId} 执行完成`, `${result.artifact.title} 已写入 artifacts/story_workflow/${nodeId}.json。`);
+      showToast(`${nodeId} 执行完成`);
+    } catch (error) {
+      appendLog("story-workflow", "error", `${nodeId} 执行失败`, error instanceof Error ? error.message : "未知错误");
+      showToast(`${nodeId} 执行失败`);
+      void loadStoryWorkflowForProject(activeProject.projectId);
+      void refreshBackendStatus();
+    } finally {
+      setRunningStoryNodeId("");
+    }
+  }
+
+  async function handleRunStoryWorkflowNodes(nodeIds: StoryWorkflowNodeId[], label: string) {
+    if (!activeProject.projectId || runningStoryNodeId || runningStoryBatchLabel) return;
+    setRunningStoryBatchLabel(label);
+    appendLog("story-workflow", "info", `开始执行 ${label}`, nodeIds.join(" -> "));
+    try {
+      const result = await runStoryWorkflowAll(activeProject.projectId, {
+        nodeId: nodeIds[0],
+        nodeIds,
+        episodeId: selectedEpisodeId,
+        sceneId: selectedWorkflowSceneId,
+      });
+      setStoryWorkflow((current) => {
+        if (!current) return current;
+        const nextArtifacts = { ...current.artifacts };
+        for (const artifact of result.artifacts) nextArtifacts[artifact.nodeId] = artifact;
+        return { ...current, artifacts: nextArtifacts };
+      });
+      void refreshBackendStatus();
+      appendLog("story-workflow", "success", `${label} 执行完成`, `${result.artifacts.length} 个节点已写入 artifacts/story_workflow。`);
+      showToast(`${label} 执行完成`);
+    } catch (error) {
+      appendLog("story-workflow", "error", `${label} 执行失败`, error instanceof Error ? error.message : "未知错误");
+      showToast(`${label} 执行失败`);
+      void loadStoryWorkflowForProject(activeProject.projectId);
+      void refreshBackendStatus();
+    } finally {
+      setRunningStoryBatchLabel("");
+    }
+  }
+
+  async function handleSaveStoryWorkflowArtifact(nodeId: StoryWorkflowNodeId, rawText: string) {
+    if (!activeProject.projectId) return;
+    try {
+      const parsed = parseJsonObjectDraft(rawText);
+      const result = await saveStoryWorkflowArtifact(activeProject.projectId, nodeId, { output: parsed, rawText });
+      setStoryWorkflow((current) => current ? {
+        ...current,
+        artifacts: {
+          ...current.artifacts,
+          [nodeId]: result.artifact,
+        },
+      } : current);
+      appendLog("story-workflow", "success", `${nodeId} 产物已保存`, "人工编辑产物已写回项目文件夹。");
+      showToast(`${nodeId} 已保存`);
+    } catch (error) {
+      appendLog("story-workflow", "error", `${nodeId} 保存失败`, error instanceof Error ? error.message : "未知错误");
+      showToast(`${nodeId} 保存失败`);
     }
   }
 
@@ -861,10 +971,11 @@ function App() {
 
   async function refreshBackendStatus() {
     try {
-      const [health, settings, rulepacks, imageProviders, logs, imageLogs, imageTasks] = await Promise.all([
+      const [health, settings, rulepacks, promptLibraryResult, imageProviders, logs, imageLogs, imageTasks] = await Promise.all([
         getBackendHealth(),
         getBackendSettings(),
         listBackendRulepacks(),
+        loadBackendPromptLibrary(),
         listBackendImageProviders(),
         listBackendLlmLogs(80),
         listBackendImageLogs(120),
@@ -873,6 +984,7 @@ function App() {
       setBackendHealth(health);
       setGeneralConfig(settings.general);
       setBackendRulepacks(rulepacks.rulepacks);
+      setBackendPromptLibrary(promptLibraryResult);
       setBackendImageProviders(imageProviders.providers);
       setBackendLlmLogs(logs.logs);
       setBackendImageLogs(imageLogs.logs);
@@ -921,6 +1033,50 @@ function App() {
         void refreshBackendStatus();
       })
       .catch((error) => appendLog("general-config", "error", "基本配置保存失败", error instanceof Error ? error.message : "未知错误"));
+  }
+
+  async function handleCreateBackendPromptVersion(input: { promptId: string; sourceVersionId?: string; name?: string; description?: string; content?: string }) {
+    try {
+      const result = await createBackendPromptVersion(input);
+      setBackendPromptLibrary(result.library);
+      appendLog("prompt-library", "success", "提示词版本已新建", result.version.name);
+      void refreshBackendStatus();
+    } catch (error) {
+      appendLog("prompt-library", "error", "新建提示词版本失败", error instanceof Error ? error.message : "未知错误");
+    }
+  }
+
+  async function handleUpdateBackendPromptVersion(versionId: string, input: { name?: string; description?: string; content?: string }) {
+    try {
+      const result = await updateBackendPromptVersion(versionId, input);
+      setBackendPromptLibrary(result.library);
+      appendLog("prompt-library", "success", "提示词版本已保存", result.version.name);
+      void refreshBackendStatus();
+    } catch (error) {
+      appendLog("prompt-library", "error", "保存提示词版本失败", error instanceof Error ? error.message : "未知错误");
+    }
+  }
+
+  async function handleDeleteBackendPromptVersion(versionId: string) {
+    try {
+      const result = await deleteBackendPromptVersion(versionId);
+      setBackendPromptLibrary(result.library);
+      appendLog("prompt-library", "warning", "提示词版本已删除", versionId);
+      void refreshBackendStatus();
+    } catch (error) {
+      appendLog("prompt-library", "error", "删除提示词版本失败", error instanceof Error ? error.message : "未知错误");
+    }
+  }
+
+  async function handleActivateBackendPromptVersion(promptId: string, versionId: string) {
+    try {
+      const result = await activateBackendPromptVersion(promptId, versionId);
+      setBackendPromptLibrary(result.library);
+      appendLog("prompt-library", "success", "当前提示词版本已启用", result.version.name);
+      void refreshBackendStatus();
+    } catch (error) {
+      appendLog("prompt-library", "error", "启用提示词版本失败", error instanceof Error ? error.message : "未知错误");
+    }
   }
 
   async function inspectBackendPrompt(promptId: string) {
@@ -1069,7 +1225,45 @@ function App() {
               onTaskRefresh={() => void refreshBackendStatus()}
             />
           )}
-          {activePage === "context" && <ContextPackView contextPack={contextPack} />}
+          {activePage === "planning" && (
+            <StoryPlanningView
+              state={storyWorkflow}
+              runningNodeId={runningStoryNodeId}
+              runningBatchLabel={runningStoryBatchLabel}
+              onRunNode={(nodeId) => void handleRunStoryWorkflowNode(nodeId)}
+              onRunNodes={(nodeIds) => void handleRunStoryWorkflowNodes(nodeIds, "剧本统筹")}
+              onRunFullWorkflow={() => void handleRunStoryWorkflowNodes(["01A", "01B", "01C", "01D", "02", "03", "04", "05", "06"], "01-06 全流程")}
+              onSaveArtifact={(nodeId, rawText) => void handleSaveStoryWorkflowArtifact(nodeId, rawText)}
+              onRefresh={() => void loadStoryWorkflowForProject(activeProject.projectId)}
+            />
+          )}
+          {activePage === "storyboard" && (
+            <StoryboardPlanningView
+              state={storyWorkflow}
+              episodes={analysis.episodes}
+              selectedEpisodeId={selectedEpisodeId}
+              onSelectEpisode={setSelectedEpisodeId}
+              selectedSceneId={selectedWorkflowSceneId}
+              onSelectScene={setSelectedWorkflowSceneId}
+              runningNodeId={runningStoryNodeId}
+              runningBatchLabel={runningStoryBatchLabel}
+              onRunNode={(nodeId) => void handleRunStoryWorkflowNode(nodeId)}
+              onRunNodes={(nodeIds) => void handleRunStoryWorkflowNodes(nodeIds, "分镜规划")}
+              onSaveArtifact={(nodeId, rawText) => void handleSaveStoryWorkflowArtifact(nodeId, rawText)}
+              onRefresh={() => void loadStoryWorkflowForProject(activeProject.projectId)}
+            />
+          )}
+          {activePage === "video" && (
+            <VideoGenerationView
+              state={storyWorkflow}
+              runningNodeId={runningStoryNodeId}
+              runningBatchLabel={runningStoryBatchLabel}
+              onRunNode={(nodeId) => void handleRunStoryWorkflowNode(nodeId)}
+              onRunNodes={(nodeIds) => void handleRunStoryWorkflowNodes(nodeIds, "视频生成")}
+              onSaveArtifact={(nodeId, rawText) => void handleSaveStoryWorkflowArtifact(nodeId, rawText)}
+              onRefresh={() => void loadStoryWorkflowForProject(activeProject.projectId)}
+            />
+          )}
           {activePage === "tasks" && (
             <TaskRecordView
               llmLogs={backendLlmLogs}
@@ -1090,9 +1284,9 @@ function App() {
               artifacts={activeProject.artifacts}
               locks={activeProject.locks}
               tasks={activeProject.tasks}
-              promptLibrary={promptLibrary}
               backendHealth={backendHealth}
               backendRulepacks={backendRulepacks}
+              backendPromptLibrary={backendPromptLibrary}
               backendLlmLogs={backendLlmLogs}
               backendLlmLogDetail={backendLlmLogDetail}
               backendPromptContent={selectedBackendPromptContent}
@@ -1109,24 +1303,10 @@ function App() {
               onGeneralConfigChange={updateGeneralConfig}
               onLlmConfigChange={updateLlmConfig}
               onImageConfigChange={updateImageConfig}
-              onPromptLibraryChange={updatePromptLibrary}
-            />
-          )}
-          {activePage === "storyboard" && (
-            <StoryboardWorkbench
-              analysis={analysis}
-              contextPack={contextPack}
-              selectedEpisode={selectedEpisode}
-              selectedEpisodeId={selectedEpisodeId}
-              setSelectedEpisodeId={setSelectedEpisodeId}
-              viewMode={viewMode}
-              setViewMode={setViewMode}
-              hasDraftChanges={hasDraftChanges}
-              onExportEpisode={() => void handleExportBundle(selectedEpisode)}
-              onEpisodeChange={updateSelectedEpisode}
-              locks={activeProject.locks}
-              onLock={updateLock}
-              onRerun={handleRerun}
+              onCreatePromptVersion={(input) => void handleCreateBackendPromptVersion(input)}
+              onUpdatePromptVersion={(versionId, input) => void handleUpdateBackendPromptVersion(versionId, input)}
+              onDeletePromptVersion={(versionId) => void handleDeleteBackendPromptVersion(versionId)}
+              onActivatePromptVersion={(promptId, versionId) => void handleActivateBackendPromptVersion(promptId, versionId)}
             />
           )}
         </section>
@@ -1284,12 +1464,16 @@ function buildRunningTopTasks({
   isGenerating,
   runningAssetExtractKind,
   runningImageAssetId,
+  runningStoryNodeId,
+  runningStoryBatchLabel,
   imageTasks,
   llmLogs,
 }: {
   isGenerating: boolean;
   runningAssetExtractKind: AssetKind | "";
   runningImageAssetId: string;
+  runningStoryNodeId: StoryWorkflowNodeId | "";
+  runningStoryBatchLabel: string;
   imageTasks: BackendImageTask[];
   llmLogs: BackendLlmLog[];
 }): RunningTopTask[] {
@@ -1303,6 +1487,12 @@ function buildRunningTopTasks({
       name: `LLM 提取${assetKindLabel(runningAssetExtractKind)}资产中`,
       category: "llm",
     });
+  }
+  if (runningStoryNodeId) {
+    tasks.push({ id: `story-node-${runningStoryNodeId}`, name: `LLM ${runningStoryNodeId} 执行中`, category: "llm" });
+  }
+  if (runningStoryBatchLabel) {
+    tasks.push({ id: `story-batch-${runningStoryBatchLabel}`, name: `LLM ${runningStoryBatchLabel} 执行中`, category: "llm" });
   }
   for (const log of llmLogs) {
     if (log.level === "info" && /开始|执行中|调用中|提取中|生成中/.test(`${log.message}${log.label ?? ""}`)) {
@@ -1351,9 +1541,10 @@ function AppNav({
   const items = [
     { id: "projects", label: "项目管理", icon: <FolderKanban size={18} /> },
     { id: "script", label: "剧本校验", icon: <FileText size={18} /> },
+    { id: "planning", label: "剧本统筹", icon: <Layers3 size={18} /> },
     { id: "assets", label: "资产审阅", icon: <Package size={18} /> },
-    { id: "storyboard", label: "分镜工作台", icon: <Scissors size={18} /> },
-    { id: "context", label: "辅助信息", icon: <Database size={18} /> },
+    { id: "storyboard", label: "分镜规划", icon: <Scissors size={18} /> },
+    { id: "video", label: "视频生成", icon: <Film size={18} /> },
     { id: "tasks", label: "任务记录", icon: <Terminal size={18} /> },
     { id: "pipeline", label: "流程配置", icon: <ClipboardList size={18} /> },
   ];
@@ -2408,6 +2599,922 @@ function AssetReviewView({
   );
 }
 
+function StoryPlanningView({
+  state,
+  runningNodeId,
+  runningBatchLabel,
+  onRunNode,
+  onRunNodes,
+  onRunFullWorkflow,
+  onSaveArtifact,
+  onRefresh,
+}: {
+  state: StoryWorkflowState | null;
+  runningNodeId: StoryWorkflowNodeId | "";
+  runningBatchLabel: string;
+  onRunNode: (nodeId: StoryWorkflowNodeId) => void;
+  onRunNodes: (nodeIds: StoryWorkflowNodeId[]) => void;
+  onRunFullWorkflow: () => void;
+  onSaveArtifact: (nodeId: StoryWorkflowNodeId, rawText: string) => void;
+  onRefresh: () => void;
+}) {
+  const nodes = filterStoryWorkflowNodes(state, "planning");
+  return (
+    <StoryWorkflowPageFrame
+      title="剧本统筹"
+      description="执行 01/02：先建立全剧叙事坐标，再形成章节任务卡。这里只做统筹信息，不做资产定稿，不写分镜。"
+      nodes={nodes}
+      artifacts={state?.artifacts ?? {}}
+      runningNodeId={runningNodeId}
+      runningBatchLabel={runningBatchLabel}
+      onRunNode={onRunNode}
+      onRunNodes={() => onRunNodes(nodes.map((node) => node.id))}
+      onRunFullWorkflow={onRunFullWorkflow}
+      onSaveArtifact={onSaveArtifact}
+      onRefresh={onRefresh}
+    />
+  );
+}
+
+function StoryboardPlanningView({
+  state,
+  episodes,
+  selectedEpisodeId,
+  onSelectEpisode,
+  selectedSceneId,
+  onSelectScene,
+  runningNodeId,
+  runningBatchLabel,
+  onRunNode,
+  onRunNodes,
+  onSaveArtifact,
+  onRefresh,
+}: {
+  state: StoryWorkflowState | null;
+  episodes: EpisodeResult[];
+  selectedEpisodeId: string;
+  onSelectEpisode: (episodeId: string) => void;
+  selectedSceneId: string;
+  onSelectScene: (sceneId: string) => void;
+  runningNodeId: StoryWorkflowNodeId | "";
+  runningBatchLabel: string;
+  onRunNode: (nodeId: StoryWorkflowNodeId) => void;
+  onRunNodes: (nodeIds: StoryWorkflowNodeId[]) => void;
+  onSaveArtifact: (nodeId: StoryWorkflowNodeId, rawText: string) => void;
+  onRefresh: () => void;
+}) {
+  const workflowEpisodes = state?.episodes ?? [];
+  const activeWorkflowEpisode = workflowEpisodes.find((episode) => episode.episodeId === selectedEpisodeId) ?? workflowEpisodes[0];
+  const sceneOptions = activeWorkflowEpisode?.scenes ?? [];
+  const nodes = filterStoryWorkflowNodes(state, "storyboard");
+  return (
+    <section className="page-stack story-workflow-page">
+      <div className="page-header work-header">
+        <div>
+          <h2>分镜规划</h2>
+          <p>执行 03/04/05：单集任务卡、场次简报、场级分镜。当前先不接资产审阅真源，避免流程互相牵连。</p>
+        </div>
+        <div className="header-actions">
+          <select value={selectedEpisodeId} onChange={(event) => onSelectEpisode(event.target.value)}>
+            {(workflowEpisodes.length ? workflowEpisodes : episodes.map((episode) => ({ episodeId: episode.episodeId, title: episode.title, scenes: [] }))).map((episode) => (
+              <option value={episode.episodeId} key={episode.episodeId}>
+                {episode.episodeId}
+              </option>
+            ))}
+          </select>
+          <select value={selectedSceneId} onChange={(event) => onSelectScene(event.target.value)}>
+            {(sceneOptions.length ? sceneOptions : [{ sceneId: "SC01", title: "SC01" }]).map((scene) => (
+              <option value={scene.sceneId} key={scene.sceneId}>
+                {scene.sceneId}
+              </option>
+            ))}
+          </select>
+          <button className="primary-button" onClick={() => onRunNodes(nodes.map((node) => node.id))} disabled={Boolean(runningNodeId || runningBatchLabel)}>
+            <Play size={16} />
+            {runningBatchLabel ? "执行中" : "运行 03-05"}
+          </button>
+          <button onClick={onRefresh}>
+            <RefreshCcw size={16} />
+            刷新
+          </button>
+        </div>
+      </div>
+      <StoryWorkflowNodeGrid
+        nodes={nodes}
+        artifacts={state?.artifacts ?? {}}
+        runningNodeId={runningNodeId}
+        runningBatchLabel={runningBatchLabel}
+        onRunNode={onRunNode}
+        onSaveArtifact={onSaveArtifact}
+      />
+    </section>
+  );
+}
+
+function VideoGenerationView({
+  state,
+  runningNodeId,
+  runningBatchLabel,
+  onRunNode,
+  onRunNodes,
+  onSaveArtifact,
+  onRefresh,
+}: {
+  state: StoryWorkflowState | null;
+  runningNodeId: StoryWorkflowNodeId | "";
+  runningBatchLabel: string;
+  onRunNode: (nodeId: StoryWorkflowNodeId) => void;
+  onRunNodes: (nodeIds: StoryWorkflowNodeId[]) => void;
+  onSaveArtifact: (nodeId: StoryWorkflowNodeId, rawText: string) => void;
+  onRefresh: () => void;
+}) {
+  const nodes = filterStoryWorkflowNodes(state, "video");
+  return (
+    <StoryWorkflowPageFrame
+      title="视频生成"
+      description="执行 06：把已确认分镜转成视频提示词草案。这里服务人工检查，不改分镜，不改资产真源。"
+      nodes={nodes}
+      artifacts={state?.artifacts ?? {}}
+      runningNodeId={runningNodeId}
+      runningBatchLabel={runningBatchLabel}
+      onRunNode={onRunNode}
+      onRunNodes={() => onRunNodes(nodes.map((node) => node.id))}
+      onSaveArtifact={onSaveArtifact}
+      onRefresh={onRefresh}
+    />
+  );
+}
+
+function StoryWorkflowPageFrame({
+  title,
+  description,
+  nodes,
+  artifacts,
+  runningNodeId,
+  runningBatchLabel,
+  onRunNode,
+  onRunNodes,
+  onRunFullWorkflow,
+  onSaveArtifact,
+  onRefresh,
+}: {
+  title: string;
+  description: string;
+  nodes: StoryWorkflowNode[];
+  artifacts: Partial<Record<StoryWorkflowNodeId, StoryWorkflowArtifact>>;
+  runningNodeId: StoryWorkflowNodeId | "";
+  runningBatchLabel: string;
+  onRunNode: (nodeId: StoryWorkflowNodeId) => void;
+  onRunNodes: () => void;
+  onRunFullWorkflow?: () => void;
+  onSaveArtifact: (nodeId: StoryWorkflowNodeId, rawText: string) => void;
+  onRefresh: () => void;
+}) {
+  return (
+    <section className="page-stack story-workflow-page">
+      <div className="page-header work-header">
+        <div>
+          <h2>{title}</h2>
+          <p>{description}</p>
+        </div>
+        <div className="header-actions">
+          <button className="primary-button" onClick={onRunNodes} disabled={Boolean(runningNodeId || runningBatchLabel)}>
+            <Play size={16} />
+            {runningBatchLabel ? "执行中" : "运行本页全部"}
+          </button>
+          {onRunFullWorkflow && (
+            <button onClick={onRunFullWorkflow} disabled={Boolean(runningNodeId || runningBatchLabel)}>
+              <Sparkles size={16} />
+              运行 01-06
+            </button>
+          )}
+          <button onClick={onRefresh}>
+            <RefreshCcw size={16} />
+            刷新
+          </button>
+        </div>
+      </div>
+      <StoryWorkflowNodeGrid
+        nodes={nodes}
+        artifacts={artifacts}
+        runningNodeId={runningNodeId}
+        runningBatchLabel={runningBatchLabel}
+        onRunNode={onRunNode}
+        onSaveArtifact={onSaveArtifact}
+      />
+    </section>
+  );
+}
+
+function StoryWorkflowNodeGrid({
+  nodes,
+  artifacts,
+  runningNodeId,
+  runningBatchLabel,
+  onRunNode,
+  onSaveArtifact,
+}: {
+  nodes: StoryWorkflowNode[];
+  artifacts: Partial<Record<StoryWorkflowNodeId, StoryWorkflowArtifact>>;
+  runningNodeId: StoryWorkflowNodeId | "";
+  runningBatchLabel: string;
+  onRunNode: (nodeId: StoryWorkflowNodeId) => void;
+  onSaveArtifact: (nodeId: StoryWorkflowNodeId, rawText: string) => void;
+}) {
+  const [activeNodeId, setActiveNodeId] = useState<StoryWorkflowNodeId | "">("");
+  const [artifactDraft, setArtifactDraft] = useState("");
+  const [artifactView, setArtifactView] = useState<"review" | "json">("review");
+  const activeNode = nodes.find((node) => node.id === activeNodeId) ?? nodes[0];
+  const activeArtifact = activeNode ? artifacts[activeNode.id] : undefined;
+
+  useEffect(() => {
+    if (!nodes.length) return;
+    if (!activeNodeId || !nodes.some((node) => node.id === activeNodeId)) {
+      setActiveNodeId(nodes[0].id);
+    }
+  }, [nodes, activeNodeId]);
+
+  useEffect(() => {
+    if (!activeArtifact) {
+      setArtifactDraft("");
+      return;
+    }
+    setArtifactDraft(formatJson(activeArtifact.output && Object.keys(activeArtifact.output).length ? activeArtifact.output : activeArtifact.rawText || {}));
+  }, [activeArtifact?.updatedAt, activeArtifact?.rawText, activeNode?.id]);
+
+  if (!nodes.length) {
+    return <div className="empty-state">当前项目还没有读取到 01-06 工作流节点。请确认后端在线。</div>;
+  }
+
+  return (
+    <div className="story-workflow-layout">
+      <section className="story-node-list">
+        {nodes.map((node) => {
+          const artifact = artifacts[node.id];
+          const status = runningNodeId === node.id ? "running" : artifact?.status ?? "idle";
+          return (
+            <button key={node.id} className={activeNode?.id === node.id ? "active" : ""} onClick={() => setActiveNodeId(node.id)}>
+              <strong>{node.id} {node.title}</strong>
+              <span>{node.scope}</span>
+              <small>{node.outputSummary}</small>
+              <em className={`story-node-status ${status}`}>{storyNodeStatusText(status)}</em>
+            </button>
+          );
+        })}
+      </section>
+
+      {activeNode && (
+        <section className="story-node-detail">
+          <section className="story-node-brief">
+            <div className="story-node-brief-main">
+              <div className="story-node-brief-title">
+                <Layers3 size={18} />
+                <strong>{activeNode.id} {activeNode.title}</strong>
+                <span>{activeNode.scope}</span>
+              </div>
+              <div className="story-node-brief-fields">
+                <span>输入：{activeNode.inputSummary}</span>
+                <span>输出：{activeNode.outputSummary}</span>
+                <span>依赖：{activeNode.dependsOn.length ? activeNode.dependsOn.join(" / ") : "无"}</span>
+                <span>Prompt：{activeNode.promptPath}</span>
+              </div>
+            </div>
+            <button className="primary-button" onClick={() => onRunNode(activeNode.id)} disabled={Boolean(runningNodeId || runningBatchLabel)}>
+              <Play size={16} />
+              {runningNodeId === activeNode.id ? "执行中" : `执行 ${activeNode.id}`}
+            </button>
+          </section>
+
+          <article className="panel story-artifact-panel">
+            <div className="panel-title">
+              <ClipboardList size={18} />
+              <span>节点产物</span>
+              <strong>{activeArtifact ? storyNodeStatusText(activeArtifact.status) : "未生成"}</strong>
+            </div>
+            {activeArtifact ? (
+              <>
+                <div className="story-artifact-meta">
+                  <span>{activeArtifact.updatedAt || "未记录时间"}</span>
+                  <span>{activeArtifact.inputSummary || "无输入摘要"}</span>
+                </div>
+                {activeArtifact.error && <div className="json-error">{activeArtifact.error}</div>}
+                <div className="story-artifact-toolbar">
+                  <div className="mode-switch compact" aria-label="节点产物查看模式">
+                    <button className={artifactView === "review" ? "active" : ""} onClick={() => setArtifactView("review")}>
+                      审阅
+                    </button>
+                    <button className={artifactView === "json" ? "active" : ""} onClick={() => setArtifactView("json")}>
+                      JSON
+                    </button>
+                  </div>
+                </div>
+                {artifactView === "review" ? (
+                  <StoryArtifactReview nodeId={activeArtifact.nodeId} output={activeArtifact.output} />
+                ) : (
+                  <>
+                    <textarea value={artifactDraft} onChange={(event) => setArtifactDraft(event.target.value)} spellCheck={false} />
+                    <div className="story-node-actions">
+                      <button onClick={() => onSaveArtifact(activeArtifact.nodeId, artifactDraft)}>
+                        <Save size={16} />
+                        保存人工修改
+                      </button>
+                    </div>
+                  </>
+                )}
+              </>
+            ) : (
+              <div className="empty-state">该节点还没有产物。执行后会写入项目文件夹 `artifacts/story_workflow/{activeNode.id}.json`。</div>
+            )}
+          </article>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function StoryArtifactReview({ nodeId, output }: { nodeId: StoryWorkflowNodeId; output: Record<string, unknown> }) {
+  const data = asRecord(output);
+  if (!Object.keys(data).length) {
+    return <div className="empty-state">该节点没有可审阅的结构化内容。请到 JSON 标签查看原始输出。</div>;
+  }
+
+  if (nodeId === "01A") return <Review01A data={data} />;
+  if (nodeId === "01B") return <Review01B data={data} />;
+  if (nodeId === "01C") return <Review01C data={data} />;
+  if (nodeId === "01D") return <Review01D data={data} />;
+  if (nodeId === "02") return <Review02 data={data} />;
+  if (nodeId === "03") return <Review03 data={data} />;
+  if (nodeId === "04") return <Review04 data={data} />;
+  if (nodeId === "05") return <Review05 data={data} />;
+  if (nodeId === "06") return <Review06 data={data} />;
+  return <GenericArtifactReview data={data} />;
+}
+
+function Review01A({ data }: { data: Record<string, unknown> }) {
+  const globalTurns = asArray(data.global_turning_points).map(asRecord);
+  const emotionalCurve = globalTurns.length ? globalTurns : asArray(data.emotional_curve).map(asRecord);
+  const chapterMap = asArray(data.chapter_map).map(asRecord);
+  const keyTurns = globalTurns.length ? [] : asArray(data.key_turns).map(asRecord);
+  return (
+    <div className="story-artifact-review">
+      <ReviewHero
+        title={textValue(data.logline, "未生成一句话梗概")}
+        subtitle={textValue(data.mainline)}
+        tags={asTextArray(data.genre_tone_tags)}
+      />
+      <ReviewSection title={globalTurns.length ? "关键转折地图" : "全剧情绪曲线"}>
+        <TimelineList rows={emotionalCurve} leftKey="episode_hint" titleKey="event" detailKey={globalTurns.length ? "narrative_function" : "emotion_shift"} />
+      </ReviewSection>
+      <ReviewSection title="章节节点">
+        <ChapterCardGrid rows={chapterMap} />
+      </ReviewSection>
+      {keyTurns.length > 0 && (
+        <ReviewSection title="关键转折">
+          <SimpleTable
+            columns={[
+              ["episode_hint", "集数"],
+              ["turn", "转折"],
+              ["why_important", "作用"],
+            ]}
+            rows={keyTurns}
+          />
+        </ReviewSection>
+      )}
+    </div>
+  );
+}
+
+function Review01B({ data }: { data: Record<string, unknown> }) {
+  const characters = asArray(data.main_characters).map(asRecord);
+  const relationships = asArray(data.relationship_map).map(asRecord);
+  const risks = asArray(data.character_risks_for_later).map(asRecord);
+  return (
+    <div className="story-artifact-review">
+      <ReviewSection title="主要角色档案">
+        <SimpleTable
+          columns={[
+            ["name", "角色"],
+            ["role_function", "戏剧功能"],
+            ["core_desire", "核心欲望"],
+            ["performance_baseline", "表演底色"],
+            ["identity_changes", "身份变化"],
+          ]}
+          rows={characters}
+          className="character-review-table"
+        />
+      </ReviewSection>
+      <ReviewSection title="身份视觉阶段">
+        <GenericObjectList rows={characters.flatMap((character) => asArray(character.identity_visual_stages).map((stage) => ({ name: character.name, ...asRecord(stage) })))} />
+      </ReviewSection>
+      <ReviewSection title="关系 / 认知变化">
+        <GenericObjectList
+          rows={characters.flatMap((character) => [
+            ...asArray(character.relationship_state_changes).map((item) => ({ name: character.name, type: "关系", ...asRecord(item) })),
+            ...asArray(character.knowledge_state_changes).map((item) => ({ name: character.name, type: "认知", ...asRecord(item) })),
+          ])}
+        />
+      </ReviewSection>
+      <ReviewSection title="关系变化">
+        {relationships.length ? <GenericObjectList rows={relationships} /> : <EmptyReviewText text="未输出关系变化。" />}
+      </ReviewSection>
+      <ReviewSection title="后续风险">
+        <GenericObjectList rows={risks} fallback={asTextArray(data.character_risks_for_later)} />
+      </ReviewSection>
+    </div>
+  );
+}
+
+function Review01C({ data }: { data: Record<string, unknown> }) {
+  return (
+    <div className="story-artifact-review">
+      <ReviewSection title="伏笔 / Callback">
+        <SimpleTable
+          columns={[
+            ["setup_episode", "埋设"],
+            ["setup_text", "内容"],
+            ["payoff_episode", "回收"],
+            ["payoff_text", "回收方式"],
+            ["risk", "风险"],
+          ]}
+          rows={asArray(data.foreshadowing_callbacks).map(asRecord)}
+        />
+      </ReviewSection>
+      <div className="review-two-col">
+        <ReviewSection title="视觉母题">
+          <GenericObjectList rows={asArray(data.visual_motifs).map(asRecord)} fallback={asTextArray(data.visual_motifs)} />
+        </ReviewSection>
+        <ReviewSection title="复现空间 / 道具">
+          <ReviewMiniBlock title="道具" items={asArray(data.recurring_props)} />
+          <ReviewMiniBlock title="空间" items={asArray(data.recurring_spaces)} />
+        </ReviewSection>
+      </div>
+      <ReviewSection title="资产变化风险">
+        <GenericObjectList rows={asArray(data.asset_change_risks).map(asRecord)} fallback={asTextArray(data.asset_change_risks)} />
+      </ReviewSection>
+      <ReviewSection title="复核优先级">
+        <BulletList items={asTextArray(data.review_priority)} emptyText="未输出复核优先级。" />
+      </ReviewSection>
+    </div>
+  );
+}
+
+function Review01D({ data }: { data: Record<string, unknown> }) {
+  const summary = asRecord(data.series_bible_summary);
+  const characterSummary = asRecord(data.character_arc_summary);
+  const trackItems = asRecord(data.must_track_items);
+  return (
+    <div className="story-artifact-review">
+      <ReviewHero
+        title={textValue(summary.logline || data.logline, "叙事圣经摘要")}
+        subtitle={textValue(summary.mainline || data.mainline)}
+        tags={asTextArray(summary.genre_tone_tags || data.genre_tone_tags)}
+      />
+      <ReviewSection title="章节图">
+        <ChapterCardGrid rows={asArray(data.chapter_map || summary.chapter_map).map(asRecord)} />
+      </ReviewSection>
+      <ReviewSection title="角色摘要">
+        <SimpleTable
+          columns={[
+            ["name", "角色"],
+            ["role_function", "戏剧功能"],
+            ["core_desire", "核心欲望"],
+            ["performance_baseline", "表演底色"],
+            ["identity_changes", "身份变化"],
+          ]}
+          rows={asArray(characterSummary.main_characters || data.character_arc_summary).map(asRecord)}
+          className="character-review-table"
+        />
+      </ReviewSection>
+      <div className="review-two-col">
+        <ReviewSection title="伏笔 / 母题">
+          <ReviewMiniBlock title="伏笔" items={asArray(trackItems.foreshadowing_callbacks)} />
+          <ReviewMiniBlock title="视觉母题" items={asArray(trackItems.visual_motifs)} />
+        </ReviewSection>
+        <ReviewSection title="道具 / 空间 / 变化风险">
+          <ReviewMiniBlock title="道具" items={asArray(trackItems.recurring_props)} />
+          <ReviewMiniBlock title="空间" items={asArray(trackItems.recurring_spaces)} />
+          <ReviewMiniBlock title="变化风险" items={asArray(trackItems.asset_change_risks)} />
+        </ReviewSection>
+      </div>
+    </div>
+  );
+}
+
+function Review02({ data }: { data: Record<string, unknown> }) {
+  const chapters = asArray(data.chapter_cards).map(asRecord);
+  return (
+    <div className="story-artifact-review">
+      <ReviewSection title="章节任务卡">
+        <ChapterCardGrid rows={chapters} showEpisodes />
+      </ReviewSection>
+      <ReviewSection title="章节复核风险">
+        <GenericObjectList rows={asArray(data.chapter_review_risks).map(asRecord)} fallback={asTextArray(data.chapter_review_risks)} />
+      </ReviewSection>
+    </div>
+  );
+}
+
+function Review03({ data }: { data: Record<string, unknown> }) {
+  const emotionShift = asRecord(data.emotion_shift);
+  return (
+    <div className="story-artifact-review">
+      <ReviewHero title={`${textValue(data.episode_id, "EP")} · ${textValue(data.one_line_task, "单集任务未生成")}`} subtitle={`情绪：${textValue(emotionShift.opening, "-")} -> ${textValue(emotionShift.ending, "-")} / 钩子：${textValue(data.hook_type, "-")}`} />
+      <div className="review-two-col">
+        <ReviewSection title="必须放大的细节">
+          <BulletList items={asTextArray(data.must_enlarge_details)} emptyText="未输出必须放大的细节。" />
+        </ReviewSection>
+        <ReviewSection title="节奏指令">
+          <PlainReviewText>{textValue(data.rhythm_instruction)}</PlainReviewText>
+        </ReviewSection>
+      </div>
+      <ReviewSection title="承上启下">
+        <KeyValueReview
+          rows={[
+            ["承上", data.carry_over],
+            ["启下", data.handoff],
+          ]}
+        />
+      </ReviewSection>
+      <ReviewSection title="资产连续性关注">
+        <BulletList items={asTextArray(data.asset_continuity_concerns)} emptyText="未输出资产连续性关注。" />
+      </ReviewSection>
+    </div>
+  );
+}
+
+function Review04({ data }: { data: Record<string, unknown> }) {
+  return (
+    <div className="story-artifact-review">
+      <ReviewHero title={`${textValue(data.episode_id)} / ${textValue(data.scene_id)} 导演简报`} subtitle={textValue(data.scene_dramatic_task)} />
+      <ReviewSection title="角色入场状态">
+        <SimpleTable
+          columns={[
+            ["name", "角色"],
+            ["entry_state", "入场状态"],
+            ["subtext", "潜台词"],
+            ["arc_position", "弧线位置"],
+          ]}
+          rows={asArray(data.character_entry_states).map(asRecord)}
+        />
+      </ReviewSection>
+      <div className="review-two-col">
+        <ReviewSection title="必须强调的信息">
+          <BulletList items={asTextArray(data.must_emphasize_information)} emptyText="未输出强调信息。" />
+        </ReviewSection>
+        <ReviewSection title="空间关系">
+          <PlainReviewText>{textValue(data.spatial_relation)}</PlainReviewText>
+        </ReviewSection>
+      </div>
+      <ReviewSection title="节奏氛围 / 承接">
+        <KeyValueReview
+          rows={[
+            ["节奏氛围", data.rhythm_atmosphere],
+            ["承接或钩子", data.carry_over_or_hook],
+          ]}
+        />
+      </ReviewSection>
+      <ReviewSection title="连续性风险">
+        <BulletList items={asTextArray(data.continuity_risks)} emptyText="未输出连续性风险。" />
+      </ReviewSection>
+    </div>
+  );
+}
+
+function Review05({ data }: { data: Record<string, unknown> }) {
+  const shots = asArray(data.shots).map(asRecord);
+  return (
+    <div className="story-artifact-review">
+      <ReviewHero title={`${textValue(data.episode_id)} / ${textValue(data.scene_id)} 分镜规划`} subtitle={textValue(data.scene_storyboard_summary)} />
+      <ReviewSection title={`分镜表（${shots.length} 镜）`}>
+        <div className="storyboard-review-table-wrap">
+          <table className="storyboard-review-table">
+            <thead>
+              <tr>
+                <th>镜号</th>
+                <th>时长</th>
+                <th>景别</th>
+                <th>机位/运镜</th>
+                <th>画面动作</th>
+                <th>对白/旁白</th>
+                <th>声音/转场</th>
+                <th>资产/连续性</th>
+                <th>钩子</th>
+              </tr>
+            </thead>
+            <tbody>
+              {shots.map((shot, index) => (
+                <tr key={`${textValue(shot.shot_no, String(index + 1))}-${index}`}>
+                  <td className="shot-no">{textValue(shot.shot_no, String(index + 1))}</td>
+                  <td>{textValue(shot.duration_seconds)}秒</td>
+                  <td>{textValue(shot.shot_size)}</td>
+                  <td>{[shot.camera_angle, shot.camera_movement].map((value) => textValue(value)).filter(Boolean).join(" / ")}</td>
+                  <td>{textValue(shot.screen_action)}</td>
+                  <td>{textValue(shot.dialogue_or_vo)}</td>
+                  <td>{[shot.sound_music, shot.transition].map((value) => textValue(value)).filter(Boolean).join(" / ")}</td>
+                  <td>
+                    <small>{asTextArray(shot.asset_refs).join(" / ")}</small>
+                    <p>{textValue(shot.continuity_requirements)}</p>
+                  </td>
+                  <td>{shot.is_hook_shot ? "是" : ""}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </ReviewSection>
+      <div className="review-two-col">
+        <ReviewSection title="场内空间时序">
+          <PlainReviewText>{textValue(data.scene_spatial_timeline)}</PlainReviewText>
+        </ReviewSection>
+        <ReviewSection title="人工复核点">
+          <BulletList items={asTextArray(data.review_risks)} emptyText="未输出复核点。" />
+        </ReviewSection>
+      </div>
+    </div>
+  );
+}
+
+function Review06({ data }: { data: Record<string, unknown> }) {
+  const prompts = asArray(data.video_prompts).map(asRecord);
+  return (
+    <div className="story-artifact-review">
+      <ReviewSection title={`视频提示词（${prompts.length} 条）`}>
+        <div className="video-prompt-review-list">
+          {prompts.map((prompt, index) => (
+            <article className="video-prompt-row" key={`${textValue(prompt.shot_no, String(index + 1))}-${index}`}>
+              <div className="video-prompt-index">
+                <strong>{textValue(prompt.shot_no, String(index + 1))}</strong>
+                <span>{textValue(prompt.duration_seconds)}秒</span>
+                <small>{textValue(prompt.aspect_ratio)}</small>
+              </div>
+              <div className="video-prompt-body">
+                <p>{textValue(prompt.positive_prompt)}</p>
+                <div className="video-prompt-meta">
+                  <span>运镜：{textValue(prompt.camera_movement, "-")}</span>
+                  <span>连续：{textValue(prompt.action_continuity, "-")}</span>
+                  <span>参考图：{asTextArray(prompt.reference_image_paths).length ? asTextArray(prompt.reference_image_paths).join(" / ") : "无"}</span>
+                </div>
+                <div className="video-prompt-note">
+                  <span>负向：{textValue(prompt.negative_prompt, "-")}</span>
+                  <span>QA：{textValue(prompt.qa_notes, "-")}</span>
+                </div>
+              </div>
+            </article>
+          ))}
+        </div>
+      </ReviewSection>
+    </div>
+  );
+}
+
+function GenericArtifactReview({ data }: { data: Record<string, unknown> }) {
+  return (
+    <div className="story-artifact-review">
+      <ReviewSection title="结构化内容">
+        <GenericObjectList rows={Object.entries(data).map(([key, value]) => ({ key, value }))} />
+      </ReviewSection>
+    </div>
+  );
+}
+
+function ReviewHero({ title, subtitle, tags = [] }: { title: string; subtitle?: string; tags?: string[] }) {
+  return (
+    <section className="review-hero">
+      <h3>{title}</h3>
+      {subtitle && <p>{subtitle}</p>}
+      {tags.length > 0 && (
+        <div className="review-tags">
+          {tags.map((tag) => (
+            <span key={tag}>{tag}</span>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ReviewSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="review-section">
+      <h4>{title}</h4>
+      {children}
+    </section>
+  );
+}
+
+function TimelineList({ rows, leftKey, titleKey, detailKey }: { rows: Record<string, unknown>[]; leftKey: string; titleKey: string; detailKey: string }) {
+  if (!rows.length) return <EmptyReviewText text="未输出。" />;
+  return (
+    <div className="review-timeline">
+      {rows.map((row, index) => (
+        <article key={`${textValue(row[leftKey], String(index + 1))}-${index}`}>
+          <strong>{textValue(row[leftKey], "-")}</strong>
+          <p>{textValue(row[titleKey])}</p>
+          <small>{textValue(row[detailKey])}</small>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function ChapterCardGrid({ rows, showEpisodes = false }: { rows: Record<string, unknown>[]; showEpisodes?: boolean }) {
+  if (!rows.length) return <EmptyReviewText text="未输出章节信息。" />;
+  return (
+    <div className="chapter-review-grid">
+      {rows.map((row, index) => {
+        const episodes = asArray(row.episode_titles).map(asRecord);
+        return (
+          <article className="chapter-review-card" key={`${textValue(row.chapter_id, String(index + 1))}-${index}`}>
+            <div>
+              <strong>{textValue(row.chapter_name || row.chapter_id, `章节 ${index + 1}`)}</strong>
+              <span>{textValue(row.episode_range)}</span>
+            </div>
+            <p>{textValue(row.chapter_function)}</p>
+            <KeyValueReview
+              rows={[
+                ["情绪", row.emotional_tone],
+                ["母题/伏笔", row.required_motifs_or_foreshadowing],
+                ["结束钩子", row.chapter_end_hook || row.end_hook],
+              ]}
+            />
+            {showEpisodes && episodes.length > 0 && (
+              <div className="episode-title-list">
+                {episodes.map((episode, episodeIndex) => (
+                  <div key={`${textValue(episode.episode_id, String(episodeIndex + 1))}-${episodeIndex}`}>
+                    <strong>EP{textValue(episode.episode_id, String(episodeIndex + 1)).replace(/^EP/i, "")}</strong>
+                    <span>{textValue(episode.title)}</span>
+                    <small>{textValue(episode.one_line_synopsis)}</small>
+                  </div>
+                ))}
+              </div>
+            )}
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+function SimpleTable({ columns, rows, className = "" }: { columns: [string, string][]; rows: Record<string, unknown>[]; className?: string }) {
+  if (!rows.length) return <EmptyReviewText text="未输出。" />;
+  return (
+    <div className="simple-review-table-wrap">
+      <table className={`simple-review-table ${className}`}>
+        <thead>
+          <tr>
+            {columns.map(([, label]) => (
+              <th key={label}>{label}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, rowIndex) => (
+            <tr key={rowIndex}>
+              {columns.map(([key]) => (
+                <td key={key}>{formatReviewValue(row[key])}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function KeyValueReview({ rows }: { rows: [string, unknown][] }) {
+  const visibleRows = rows.filter(([, value]) => textValue(value));
+  if (!visibleRows.length) return <EmptyReviewText text="未输出。" />;
+  return (
+    <dl className="key-value-review">
+      {visibleRows.map(([key, value]) => (
+        <div key={key}>
+          <dt>{key}</dt>
+          <dd>{formatReviewValue(value)}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function GenericObjectList({ rows, fallback = [] }: { rows: Record<string, unknown>[]; fallback?: string[] }) {
+  if (!rows.length && fallback.length) return <BulletList items={fallback} />;
+  if (!rows.length) return <EmptyReviewText text="未输出。" />;
+  return (
+    <div className="generic-review-list">
+      {rows.map((row, index) => (
+        <article key={index}>
+          {Object.entries(row).map(([key, value]) => (
+            <div key={key}>
+              <span>{humanizeArtifactKey(key)}</span>
+              <p>{formatReviewValue(value)}</p>
+            </div>
+          ))}
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function ReviewMiniBlock({ title, items }: { title: string; items: unknown[] }) {
+  return (
+    <div className="review-mini-block">
+      <strong>{title}</strong>
+      {items.length ? <GenericObjectList rows={items.map(asRecord)} fallback={items.map((item) => textValue(item)).filter(Boolean)} /> : <EmptyReviewText text="未输出。" />}
+    </div>
+  );
+}
+
+function BulletList({ items, emptyText = "未输出。" }: { items: string[]; emptyText?: string }) {
+  if (!items.length) return <EmptyReviewText text={emptyText} />;
+  return (
+    <ul className="review-bullet-list">
+      {items.map((item, index) => (
+        <li key={`${item}-${index}`}>{item}</li>
+      ))}
+    </ul>
+  );
+}
+
+function PlainReviewText({ children }: { children: ReactNode }) {
+  return <p className="plain-review-text">{children || "未输出。"}</p>;
+}
+
+function EmptyReviewText({ text }: { text: string }) {
+  return <p className="empty-review-text">{text}</p>;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function textValue(value: unknown, fallback = ""): string {
+  if (value === null || value === undefined) return fallback;
+  if (typeof value === "string") return value || fallback;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return value.map((item) => textValue(item)).filter(Boolean).join(" / ") || fallback;
+  return fallback;
+}
+
+function asTextArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return textValue(value) ? [textValue(value)] : [];
+  return value.map((item) => {
+    if (typeof item === "string") return item;
+    if (typeof item === "number" || typeof item === "boolean") return String(item);
+    const record = asRecord(item);
+    return Object.values(record).map((entry) => textValue(entry)).filter(Boolean).join("：");
+  }).filter(Boolean);
+}
+
+function formatReviewValue(value: unknown): ReactNode {
+  if (Array.isArray(value)) {
+    const items = asTextArray(value);
+    return items.length ? items.join(" / ") : "";
+  }
+  if (value && typeof value === "object") {
+    return Object.entries(asRecord(value))
+      .map(([key, entry]) => `${humanizeArtifactKey(key)}：${textValue(entry)}`)
+      .filter(Boolean)
+      .join("；");
+  }
+  return textValue(value);
+}
+
+function humanizeArtifactKey(key: string) {
+  const labels: Record<string, string> = {
+    key: "字段",
+    value: "内容",
+    name: "名称",
+    role_function: "功能",
+    core_desire: "欲望",
+    fatal_flaw: "缺陷",
+    arc_start: "起点",
+    arc_endpoint: "终点",
+    relationship_changes: "关系变化",
+    identity_changes: "身份变化",
+    setup_episode: "埋设集",
+    setup_text: "埋设内容",
+    payoff_episode: "回收集",
+    payoff_text: "回收内容",
+    risk: "风险",
+  };
+  return labels[key] || key.replaceAll("_", " ");
+}
+
+function filterStoryWorkflowNodes(state: StoryWorkflowState | null, page: StoryWorkflowNode["page"]) {
+  return state?.nodes.filter((node) => node.page === page) ?? [];
+}
+
+function storyNodeStatusText(status: StoryWorkflowArtifact["status"] | "idle" | "running") {
+  if (status === "done") return "已完成";
+  if (status === "running") return "执行中";
+  if (status === "error") return "失败";
+  return "未生成";
+}
+
 function AssetCardList({
   projectId,
   kind,
@@ -3197,6 +4304,16 @@ function formatAssetDescription(kind: AssetKind, row: Record<string, string>) {
   return row.description ?? "";
 }
 
+function parseJsonObjectDraft(rawText: string): Record<string, unknown> {
+  const trimmed = rawText.trim();
+  if (!trimmed) return {};
+  const parsed = JSON.parse(trimmed) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("节点产物必须是 JSON 对象。");
+  }
+  return parsed as Record<string, unknown>;
+}
+
 function updateAssetDescription(
   kind: AssetKind,
   rowIndex: number,
@@ -3459,9 +4576,9 @@ function PipelineConfigView({
   artifacts,
   locks,
   tasks,
-  promptLibrary,
   backendHealth,
   backendRulepacks,
+  backendPromptLibrary,
   backendLlmLogs,
   backendLlmLogDetail,
   backendPromptContent,
@@ -3478,16 +4595,19 @@ function PipelineConfigView({
   onGeneralConfigChange,
   onLlmConfigChange,
   onImageConfigChange,
-  onPromptLibraryChange,
+  onCreatePromptVersion,
+  onUpdatePromptVersion,
+  onDeletePromptVersion,
+  onActivatePromptVersion,
 }: {
   latestRun: PipelineRun | null;
   llmConfig: LlmExecutorConfig;
   artifacts: ArtifactRecord[];
   locks: LockRecord[];
   tasks: TaskRecord[];
-  promptLibrary: PromptLibraryState;
   backendHealth: BackendHealth | null;
   backendRulepacks: BackendRulepack[];
+  backendPromptLibrary: BackendPromptLibrary;
   backendLlmLogs: BackendLlmLog[];
   backendLlmLogDetail: BackendLlmLog | null;
   backendPromptContent: string;
@@ -3504,7 +4624,10 @@ function PipelineConfigView({
   onGeneralConfigChange: (config: BackendSettings["general"]) => void;
   onLlmConfigChange: (config: LlmExecutorConfig) => void;
   onImageConfigChange: (config: ImageGenerationConfig) => void;
-  onPromptLibraryChange: (state: PromptLibraryState, message?: string) => void;
+  onCreatePromptVersion: (input: { promptId: string; sourceVersionId?: string; name?: string; description?: string; content?: string }) => void;
+  onUpdatePromptVersion: (versionId: string, input: { name?: string; description?: string; content?: string }) => void;
+  onDeletePromptVersion: (versionId: string) => void;
+  onActivatePromptVersion: (promptId: string, versionId: string) => void;
 }) {
   const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState(false);
   const [activeConfigTab, setActiveConfigTab] = useState<"basic" | "llm" | "image" | "rules" | "prompts">("basic");
@@ -3537,7 +4660,7 @@ function PipelineConfigView({
         </button>
         <button className={activeConfigTab === "prompts" ? "active" : ""} onClick={() => setActiveConfigTab("prompts")} role="tab">
           <Edit3 size={17} />
-          业务提示词
+          提示词模板
         </button>
       </div>
 
@@ -3580,7 +4703,15 @@ function PipelineConfigView({
         />
       )}
 
-      {activeConfigTab === "prompts" && <PromptLibraryPanel state={promptLibrary} onChange={onPromptLibraryChange} />}
+      {activeConfigTab === "prompts" && (
+        <BackendPromptTemplatePanel
+          library={backendPromptLibrary}
+          onCreateVersion={onCreatePromptVersion}
+          onUpdateVersion={onUpdatePromptVersion}
+          onDeleteVersion={onDeletePromptVersion}
+          onActivateVersion={onActivatePromptVersion}
+        />
+      )}
 
       <details className="diagnostics-panel" open={isDiagnosticsOpen} onToggle={(event) => setIsDiagnosticsOpen(event.currentTarget.open)}>
         <summary>
@@ -3593,147 +4724,236 @@ function PipelineConfigView({
   );
 }
 
-function PromptLibraryPanel({
-  state,
-  onChange,
+function BackendPromptTemplatePanel({
+  library,
+  onCreateVersion,
+  onUpdateVersion,
+  onDeleteVersion,
+  onActivateVersion,
 }: {
-  state: PromptLibraryState;
-  onChange: (state: PromptLibraryState, message?: string) => void;
+  library: BackendPromptLibrary;
+  onCreateVersion: (input: { promptId: string; sourceVersionId?: string; name?: string; description?: string; content?: string }) => void;
+  onUpdateVersion: (versionId: string, input: { name?: string; description?: string; content?: string }) => void;
+  onDeleteVersion: (versionId: string) => void;
+  onActivateVersion: (promptId: string, versionId: string) => void;
 }) {
-  const [selectedStageId, setSelectedStageId] = useState<PromptStageId>("clean_script");
-  const selectedPromptId = state.selectedPromptIds[selectedStageId];
-  const selectedPrompt = state.prompts.find((prompt) => prompt.promptId === selectedPromptId) ?? state.prompts.find((prompt) => prompt.stageId === selectedStageId);
-  const [draft, setDraft] = useState<PromptVersion | null>(selectedPrompt ?? null);
+  const categories = useMemo(() => buildPromptTemplateCategories(library.groups), [library.groups]);
+  const [activeCategoryId, setActiveCategoryId] = useState("story");
+  const activeCategory = categories.find((category) => category.id === activeCategoryId) ?? categories[0];
+  const visibleGroups = activeCategory?.groups ?? [];
+  const [selectedPromptId, setSelectedPromptId] = useState("");
+  const selectedGroup = visibleGroups.find((group) => group.prompt.id === selectedPromptId) ?? visibleGroups[0] ?? library.groups[0];
+  const versions = selectedGroup ? [selectedGroup.official, ...selectedGroup.userVersions] : [];
+  const [selectedVersionId, setSelectedVersionId] = useState("");
+  const selectedVersion = versions.find((version) => version.id === selectedVersionId)
+    ?? versions.find((version) => version.id === selectedGroup?.activeVersionId)
+    ?? versions[0];
+  const [draft, setDraft] = useState<BackendPromptVersion | null>(selectedVersion ? { ...selectedVersion } : null);
 
   useEffect(() => {
-    setDraft(selectedPrompt ? { ...selectedPrompt } : null);
-  }, [selectedPrompt?.promptId]);
+    if (!categories.some((category) => category.id === activeCategoryId)) {
+      setActiveCategoryId(categories[0]?.id ?? "story");
+    }
+  }, [categories, activeCategoryId]);
 
-  const stageMeta = promptStages.find((stage) => stage.stageId === selectedStageId);
-  const stagePrompts = state.prompts.filter((prompt) => prompt.stageId === selectedStageId);
+  useEffect(() => {
+    if (!visibleGroups.length) {
+      setSelectedPromptId("");
+      return;
+    }
+    if (!visibleGroups.some((group) => group.prompt.id === selectedPromptId)) {
+      setSelectedPromptId(visibleGroups[0].prompt.id);
+    }
+  }, [visibleGroups, selectedPromptId]);
+
+  useEffect(() => {
+    if (!selectedGroup) {
+      setSelectedVersionId("");
+      return;
+    }
+    if (!versions.some((version) => version.id === selectedVersionId)) {
+      setSelectedVersionId(selectedGroup.activeVersionId || selectedGroup.official.id);
+    }
+  }, [selectedGroup?.prompt.id, selectedGroup?.activeVersionId, versions.length, selectedVersionId]);
+
+  useEffect(() => {
+    setDraft(selectedVersion ? { ...selectedVersion } : null);
+  }, [selectedVersion?.id]);
+
+  function createUserVersion() {
+    if (!selectedGroup || !selectedVersion) return;
+    onCreateVersion({
+      promptId: selectedGroup.prompt.id,
+      sourceVersionId: selectedVersion.id,
+      name: `${selectedVersion.name.replace(/^官方 - /, "")} 用户版`,
+      description: selectedVersion.description,
+      content: selectedVersion.content,
+    });
+  }
 
   function saveDraft() {
-    if (!draft) return;
-    onChange(upsertPrompt(state, draft), `${stageMeta?.name ?? selectedStageId} Prompt 已保存`);
+    if (!draft || draft.readonly) return;
+    onUpdateVersion(draft.id, {
+      name: draft.name,
+      description: draft.description,
+      content: draft.content,
+    });
   }
 
-  function createNewVersion() {
-    const source = draft ?? selectedPrompt;
-    if (!source) return;
-    const next: PromptVersion = {
-      ...source,
-      promptId: createPromptId(selectedStageId),
-      name: `${source.name} 新版`,
-      updatedAt: new Date().toISOString(),
-    };
-    onChange(upsertPrompt(state, next), `${stageMeta?.name ?? selectedStageId} 新 Prompt 已创建`);
+  function deleteDraft() {
+    if (!draft || draft.readonly) return;
+    if (!window.confirm(`删除提示词版本“${draft.name}”？`)) return;
+    onDeleteVersion(draft.id);
   }
 
-  function duplicateCurrent() {
-    if (!selectedPrompt) return;
-    onChange(duplicatePrompt(state, selectedPrompt.promptId), `${stageMeta?.name ?? selectedStageId} Prompt 已复制`);
-  }
+  const activeVersion = versions.find((version) => version.id === selectedGroup?.activeVersionId);
 
   return (
-    <article className="panel prompt-library-panel">
+    <article className="panel prompt-template-panel">
       <div className="panel-title">
         <Edit3 size={18} />
-        <span>Prompt 配置库</span>
-        <strong>{promptStages.length} 个阶段</strong>
+        <span>提示词模板</span>
+        <strong>{library.groups.length} 个模板 / {library.groups.reduce((count, group) => count + 1 + group.userVersions.length, 0)} 个版本</strong>
       </div>
-      <div className="prompt-library-layout">
-        <div className="prompt-stage-list">
-          {promptStages.map((stage) => {
-            const current = state.prompts.find((prompt) => prompt.promptId === state.selectedPromptIds[stage.stageId]);
+      <div className="prompt-template-layout">
+        <aside className="prompt-template-sidebar">
+          <div className="compact-section-title">
+            <strong>模板分类</strong>
+            <span>按执行用途归类</span>
+          </div>
+          {categories.map((category) => (
+            <button key={category.id} className={category.id === activeCategoryId ? "active" : ""} onClick={() => setActiveCategoryId(category.id)}>
+              <strong>{category.title}</strong>
+              <span>{category.groups.length} 个模板</span>
+            </button>
+          ))}
+        </aside>
+
+        <section className="prompt-template-list">
+          <div className="compact-section-title">
+            <strong>{activeCategory?.title ?? "模板"}</strong>
+            <span>选择要配置的 Prompt</span>
+          </div>
+          {visibleGroups.map((group) => {
+            const current = [group.official, ...group.userVersions].find((version) => version.id === group.activeVersionId) ?? group.official;
             return (
               <button
-                key={stage.stageId}
-                className={selectedStageId === stage.stageId ? "active" : ""}
-                onClick={() => setSelectedStageId(stage.stageId)}
+                key={group.prompt.id}
+                className={group.prompt.id === selectedGroup?.prompt.id ? "active" : ""}
+                onClick={() => setSelectedPromptId(group.prompt.id)}
               >
-                <strong>{stage.name}</strong>
-                <span>{current?.name ?? "未配置"}</span>
+                <strong>{getBackendPromptTitle(group.prompt.stage)}</strong>
+                <span>{getBackendPromptDescription(group.prompt.stage)}</span>
+                <small>当前：{current.name}</small>
+                <small>{group.prompt.stage} / {group.prompt.name}.md</small>
               </button>
             );
           })}
-        </div>
-        <div className="prompt-editor">
-          <div className="prompt-editor-top">
-            <div>
-              <strong>{stageMeta?.name}</strong>
-              <p>{stageMeta?.purpose}</p>
-            </div>
-            <label>
-              当前版本
-              <select
-                value={selectedPrompt?.promptId ?? ""}
-                onChange={(event) => onChange(selectPrompt(state, selectedStageId, event.target.value), "已切换 Prompt 版本")}
-              >
-                {stagePrompts.map((prompt) => (
-                  <option key={prompt.promptId} value={prompt.promptId}>
-                    {prompt.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
+          {!visibleGroups.length && <div className="empty-state">当前分类暂无模板。</div>}
+        </section>
 
-          {draft ? (
+        <section className="prompt-template-editor">
+          {selectedGroup && draft ? (
             <>
+              <div className="prompt-editor-top">
+                <div>
+                  <strong>{getBackendPromptTitle(selectedGroup.prompt.stage)}</strong>
+                  <p>{getBackendPromptDescription(selectedGroup.prompt.stage)}</p>
+                  <small>{selectedGroup.prompt.id}</small>
+                </div>
+                <label>
+                  版本
+                  <select value={selectedVersion?.id ?? ""} onChange={(event) => setSelectedVersionId(event.target.value)}>
+                    {versions.map((version) => (
+                      <option key={version.id} value={version.id}>
+                        {formatPromptVersionLabel(version)}{version.id === selectedGroup.activeVersionId ? "（当前）" : ""}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              <div className="prompt-version-toolbar">
+                <span className={`prompt-version-badge ${draft.readonly ? "official" : "user"}`}>{draft.readonly ? "官方只读" : "用户版本"}</span>
+                <span>当前启用：{activeVersion?.name ?? "官方版本"}</span>
+                <button onClick={createUserVersion}>
+                  <Plus size={16} />
+                  新建用户版本
+                </button>
+                <button onClick={() => onActivateVersion(selectedGroup.prompt.id, draft.id)} disabled={draft.id === selectedGroup.activeVersionId}>
+                  <CheckCircle2 size={16} />
+                  设为当前
+                </button>
+              </div>
+
               <div className="prompt-field-grid">
                 <label>
-                  名称
-                  <input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
+                  版本名称
+                  <input value={draft.name} readOnly={draft.readonly} onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
                 </label>
                 <label>
                   说明
-                  <input value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} />
+                  <input value={draft.description} readOnly={draft.readonly} onChange={(event) => setDraft({ ...draft, description: event.target.value })} />
                 </label>
               </div>
+
               <div className="prompt-variable-row">
                 <span>变量</span>
-                {draft.variables.map((variable) => (
-                  <code key={variable.key}>{`{{${variable.key}}}`}</code>
+                {(draft.variables.length ? draft.variables : selectedGroup.prompt.variables).map((variable) => (
+                  <code key={variable}>{`{{${variable}}}`}</code>
                 ))}
+                {!draft.variables.length && !selectedGroup.prompt.variables.length && <small>无变量</small>}
               </div>
-              <label>
-                System Prompt
-                <textarea value={draft.systemTemplate} onChange={(event) => setDraft({ ...draft, systemTemplate: event.target.value })} spellCheck={false} />
+
+              <label className="prompt-content-editor">
+                Prompt 内容
+                <textarea
+                  value={draft.content}
+                  readOnly={draft.readonly}
+                  onChange={(event) => setDraft({ ...draft, content: event.target.value })}
+                  spellCheck={false}
+                />
               </label>
-              <label>
-                User Prompt
-                <textarea value={draft.userTemplate} onChange={(event) => setDraft({ ...draft, userTemplate: event.target.value })} spellCheck={false} />
-              </label>
-              <label>
-                输出格式要求
-                <textarea value={draft.outputContract} onChange={(event) => setDraft({ ...draft, outputContract: event.target.value })} spellCheck={false} />
-              </label>
-              <label>
-                输出范例
-                <textarea value={draft.exampleOutput} onChange={(event) => setDraft({ ...draft, exampleOutput: event.target.value })} spellCheck={false} />
-              </label>
+
               <div className="config-actions">
-                <button className="primary-button" onClick={saveDraft}>
+                <button className="primary-button" onClick={saveDraft} disabled={draft.readonly}>
                   <Save size={16} />
                   保存版本
                 </button>
-                <button onClick={createNewVersion}>
-                  <Plus size={16} />
-                  新建版本
-                </button>
-                <button onClick={duplicateCurrent}>
-                  <RefreshCcw size={16} />
-                  复制当前
+                <button onClick={deleteDraft} disabled={draft.readonly}>
+                  <Trash2 size={16} />
+                  删除版本
                 </button>
               </div>
             </>
           ) : (
-            <div className="empty-state">当前阶段没有 Prompt。</div>
+            <div className="empty-state">后端还没有可配置的提示词模板。</div>
           )}
-        </div>
+        </section>
       </div>
     </article>
   );
+}
+
+function buildPromptTemplateCategories(groups: BackendPromptTemplateGroup[]) {
+  const categoryDefs = [
+    { id: "story", title: "分镜工作流", match: (stage: string) => stage.startsWith("story_workflow_") },
+    { id: "asset", title: "资产提取", match: (stage: string) => stage.startsWith("asset_extract_") },
+    { id: "script", title: "剧本校检", match: (stage: string) => stage === "script_check" || stage === "script_split" },
+    { id: "other", title: "其他规则", match: (_stage: string) => true },
+  ];
+  const used = new Set<string>();
+  return categoryDefs.map((category) => {
+    const matched = groups.filter((group) => !used.has(group.prompt.id) && category.match(group.prompt.stage));
+    matched.forEach((group) => used.add(group.prompt.id));
+    return { id: category.id, title: category.title, groups: matched };
+  }).filter((category) => category.groups.length > 0 || category.id !== "other");
+}
+
+function formatPromptVersionLabel(version: BackendPromptVersion) {
+  const sourceLabel = version.source === "official" ? "官方" : "用户";
+  const name = version.source === "official" ? version.name.replace(/^官方\s*[-－]\s*/, "") : version.name;
+  return `${sourceLabel} - ${name}`;
 }
 
 function PipelineDiagnostics({
@@ -4164,8 +5384,8 @@ function BackendRulepackPanel({
       <div className="backend-rulepack-layout">
         <section className="backend-prompt-list">
           <div className="compact-section-title">
-            <strong>规则文件</strong>
-            <span>扫描本地 rulepacks 目录</span>
+            <strong>规则包诊断</strong>
+            <span>只读扫描本地 rulepacks 目录</span>
           </div>
           {prompts.map((prompt) => (
             <button key={prompt.id} onClick={() => onInspectPrompt(prompt.id)}>
@@ -4179,10 +5399,10 @@ function BackendRulepackPanel({
         </section>
         <section className="backend-prompt-preview">
           <div className="compact-section-title">
-            <strong>Prompt 文件预览</strong>
+            <strong>当前 Prompt 预览</strong>
             <span>{backendApiBaseUrl}</span>
           </div>
-          <textarea value={promptContent || "点击左侧 Prompt 查看文件内容。"} readOnly spellCheck={false} />
+          <textarea value={promptContent || "点击左侧 Prompt 查看当前启用版本内容。编辑请到“提示词模板”。"} readOnly spellCheck={false} />
         </section>
         <section className="backend-log-preview">
           <div className="compact-section-title">
@@ -4267,6 +5487,15 @@ const backendPromptStageCopy: Record<string, { title: string; description: strin
   asset_extract_props: { title: "道具资产识别", description: "从剧本文本提取关键道具资产候选。" },
   storyboard_plan: { title: "分镜规划", description: "按场生成分镜规划所需规则。" },
   prompt_generate: { title: "视频提示词生成", description: "把分镜、资产、空间时序转成视频提示词。" },
+  story_workflow_01a_structure: { title: "01A 全剧剧情地图", description: "提取剧情大纲、章节地图和关键转折。" },
+  story_workflow_01b_characters: { title: "01B 角色身份关系", description: "提取角色功能、身份视觉阶段、关系变化和认知状态。" },
+  story_workflow_01c_risks: { title: "01C 伏笔连续性风险", description: "提取伏笔、母题和跨集状态风险。" },
+  story_workflow_01d_bible: { title: "01D 机械合并汇总", description: "由后端机械合并 01A/01B/01C，不做剧情判断。" },
+  story_workflow_02_chapters: { title: "02 章节任务卡", description: "生成章节任务和每集标题/一句话梗概。" },
+  story_workflow_03_episode_card: { title: "03 单集任务卡", description: "明确本集任务、情绪、钩子和镜头强调点。" },
+  story_workflow_04_scene_brief: { title: "04 场次简报", description: "补足场内调度、潜台词和连续性边界。" },
+  story_workflow_05_storyboard: { title: "05 分镜执行", description: "按场输出可审阅分镜脚本。" },
+  story_workflow_06_video_prompt: { title: "06 视频提示词", description: "把分镜转换为视频模型提示词草案。" },
 };
 
 function getBackendPromptTitle(stage: string) {

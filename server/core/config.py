@@ -6,6 +6,7 @@ from pathlib import Path
 APP_CONFIG_DIR = Path.home() / ".script-storyboard-system"
 APP_CONFIG_FILE = APP_CONFIG_DIR / "config.json"
 APP_SETTINGS_FILE = APP_CONFIG_DIR / "settings.json"
+APP_PROMPT_LIBRARY_FILE = APP_CONFIG_DIR / "prompt-library.json"
 APP_LOG_DIR = APP_CONFIG_DIR / "logs"
 LLM_LOG_FILE = APP_LOG_DIR / "llm-calls.json"
 IMAGE_LOG_FILE = APP_LOG_DIR / "image-calls.json"

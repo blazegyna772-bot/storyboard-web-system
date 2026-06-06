@@ -2,417 +2,290 @@
 
 ## 架构目标
 
-系统必须是可扩展骨架，而不是写死的一条流程。
+系统必须是可扩展车架，而不是写死的一条流程。
 
 核心思想：
 
-- 页面是壳
-- Pipeline 是骨架
-- Rule Pack 是规则
-- Profile 是风格
-- Adapter 是输出格式
-- LLM/图像模型是某些 stage 的执行器
+- 页面是操作台。
+- Workflow/Pipeline 是可配置骨架。
+- Rulepack 是规则、Prompt、Schema 和输出契约。
+- Adapter 是 LLM、图像、视频、导出等外部能力接入方式。
+- Artifact 是每个节点的可追踪产物。
 
-## 后端车架方向
+## 当前技术形态
 
-下一阶段从 Vite 插件式临时 API 迁移到独立 Node 后端。
+当前项目采用：
 
-目标结构：
+- 前端：React + TypeScript + Vite。
+- 后端：FastAPI。
+- 本地持久化：项目文件夹 + JSON + Markdown rulepack。
+- API 代理：后端统一代理 LLM、生图和本地文件读写。
+
+当前目标不是最终打包形态，而是先把本地生产车架跑顺。后续可在业务稳定后再考虑 Electron 包装。
+
+## 后端目录边界
 
 ```text
 server/
-  core/
-    project-store
-    pipeline-engine
-    plugin-registry
-    config-loader
-    artifact-store
-    run-logger
-  adapters/
-    llm/
-    image/
-    export/
-  pipelines/
-    script-check/
-    episode-split/
-    asset-extract/
-    storyboard-plan/
-    video-prompt/
-  rulepacks/
-    default/
-  projects/
+  api/              # HTTP API 路由
+  projects/         # 项目根目录、项目扫描、创建、删除、保存
+  settings/         # 全局配置和 API Key
+  rulepacks/        # Markdown Prompt / 规则包扫描
+  story_workflow/   # 竖屏短剧 01-06 分镜工作流
+  assets/           # 资产 records / true_sources / 图片
+  image_providers/  # 生图商家和模型适配
+  llm/              # OpenAI-compatible LLM 调用
+  logs/             # LLM、生图、任务日志
+  storage/          # JSON 文件读写
+  core/             # 路径和基础配置
 ```
 
 设计原则：
 
-- 前端只做操作台和审阅界面。
-- 后端负责本地文件系统、项目根目录、管线调度、API 代理、日志和产物。
-- 第三方 API 通过 adapter 接入。
-- Prompt、Schema、分集规则、输出格式通过 rulepack 加载。
-- 新增能力必须优先考虑是否能作为节点、规则包或适配器插入。
+- 前端不直接读写本机项目文件。
+- 前端不写死 Prompt 内容。
+- 后端从 rulepack/providerpack/settings 中读取配置。
+- 每个新能力优先判断是否应作为节点、规则包或适配器接入。
 
-开发顺序：
+## 竖屏短剧默认工作流
 
-1. 先把现有 `/api/projects/*`、LLM proxy、image proxy 从 `vite.config.js` 抽到 `server/`。
-2. 保持前端 API 路径不变。
-3. 再补 plugin registry / rulepack loader / pipeline registry。
-4. 最后用 Electron 包装前端和本地后端。
-
-## Pipeline
-
-默认流程：
+当前确认的分镜阶段默认工作流是 01-06。
 
 ```text
-01 clean_script
-02 segment_episode_scene_block
-03 build_episode_support
-04 plan_scene_context
-05 extract_asset_prompts
-06 plan_scene_storyboard
-07 generate_block_shots
-08 build_video_prompts
-09 validate
-10 export
+01A 全剧叙事结构
+01B 角色弧线与关系
+01C 伏笔与连续性风险
+01D 全剧汇总（可选）
+02  章节任务卡
+03  单集任务卡
+04  场次简报
+05  分镜执行
+06  视频提示词
 ```
 
-## 最终产物原则
+页面归属：
 
-系统最终产物只有两类：
+- 剧本统筹：01A/01B/01C/01D/02。
+- 分镜规划：03/04/05。
+- 视频生成：06。
 
-- 资产描述/资产生图提示词
-- 分镜规划/视频提示词
+当前工程实现：
 
-其他产物都是中间产物。中间产物必须满足：
+- 后端节点定义：`server/story_workflow/service.py`
+- 后端接口：`server/api/story_workflow.py`
+- 前端接口：`src/lib/storyWorkflowApi.ts`
+- 前端页面：`StoryPlanningView`、`StoryboardPlanningView`、`VideoGenerationView`
+- Prompt 文件：`rulepacks/default/story_workflow_*/prompt.md`
+- 产物目录：项目文件夹内 `artifacts/story_workflow/{node}.json`
+- 运行元信息目录：项目文件夹内 `artifacts/story_workflow/{node}.meta.json`
 
-- 被后续阶段明确引用
-- 有明确来源
-- 有明确用途
-- 不重复当前执行单元自己能判断的信息
-- 不堆无效总结
+## 节点边界
 
-## 03 / 06 / 07 边界
+### 01A 全剧叙事结构
 
-### 03 build_episode_support
+输入：全集剧本。
 
-03 只提供 06/07 当前执行边界看不到的大尺度辅助信息。
+输出：一句话梗概、类型/基调、主线、情绪曲线、章节节点、关键转折。
 
-它输出：
+不输出：资产、分镜、每集标题。
 
-- 本集信息揭露顺序
-- 本集情绪弧线
-- 跨段人物关系约束
-- 跨场道具状态约束
-- 本集视觉策略
-- 禁止提前暴露的信息
+### 01B 角色弧线与关系
 
-它不输出：
+输入：全集剧本 + 01A。
 
-- 当前镜头站位
-- 当前镜头景别
-- 当前块动作拆解
-- 当前镜头提示词
+输出：主要角色功能、欲望、缺陷、弧线终点、关系变化、身份变化。
 
-### 06 plan_scene_storyboard
+不输出：角色外观资产真源、生图提示词。
 
-06 以一场戏为首次规划边界。
+### 01C 伏笔与连续性风险
 
-它负责：
+输入：全集剧本 + 01A。
 
-- 场级分镜规划
-- 本场人物进出
-- 本场空间时序
-- 本场道具流转
-- 本场镜头连续性
+输出：伏笔 callback、视觉母题、关键道具风险、反复空间风险、资产变化疑点。
 
-它输出 `scene_spatial_timeline`，供 07 使用。
+不输出：最终资产命名。
 
-### 07 generate_block_shots / 08 build_video_prompts
+### 01D 全剧汇总
 
-07/08 是执行层。
+输入：01A/01B/01C。
 
-块级生成必须引用并遵守：
+输出：供 02 引用的叙事圣经汇总。
 
-- episode_support
-- scene_context
-- scene_spatial_timeline
-- locked_assets
-- neighboring_shots
+规则：只整合，不新增。
+
+### 02 章节任务卡
+
+输入：章节剧本或全集阶段性章节切片 + 01 输出。
+
+输出：章节名称、集数范围、章节功能、情绪主调、必须出现的母题/伏笔、章节结束钩子、每集标题、每集一句话梗概。
+
+不输出：分镜和视频提示词。
+
+### 03 单集任务卡
+
+输入：本集剧本 + 02 + 前后集概要 + 必要 01 风险。
+
+输出：本集任务、情绪变化、钩子类型、必须放大的细节、节奏指令、承上启下、资产/连续性关注点。
+
+不输出：完整分镜。
+
+### 04 场次简报
+
+输入：本场剧本 + 03 + 前后场概要 + 必要资产信息。
+
+输出：本场戏剧任务、角色进入状态、潜台词、强调信息、空间关系、节奏氛围、承接悬念。
+
+使用策略：简单场可跳过或合并到 05；多人站位、桌边对话、关键道具状态、复杂空间移动时优先独立执行。
+
+### 05 分镜执行
+
+输入：本场剧本 + 03 + 可选 04 + 资产真源或资产占位。
+
+输出：场内分镜脚本、镜号、景别、机位运动、画面动作、对白/旁白、音效、转场、资产引用、连续性要求、钩子镜头、必要 `scene_spatial_timeline`。
+
+这是当前分镜层的真正执行节点。
+
+### 06 视频提示词
+
+输入：已确认分镜 + 资产真源图 + 视频模型规则。
+
+输出：正向提示词、参考图路径、时长、画幅、镜头运动、动作连续性、负向提示词、模型参数。
+
+不改剧情、不重排分镜、不更改资产。
 
 ## 重跑策略
 
-- 首次生成：场级规划。
-- 局部不满意：块级重跑。
-- 影响空间、进出场、道具流转：场级重跑。
-- 影响信息揭露顺序、人物关系、本集目标：集级重跑。
+当前默认重跑粒度：
 
-锁定项：
+- 01A/01B/01C：全剧理解明显错误时重跑。
+- 02：章节划分、章节功能、每集标题/梗概错误时重跑。
+- 03：单集任务、情绪、钩子、承上启下错误时重跑。
+- 04：人物进入状态、潜台词、空间关系、道具状态错误时重跑。
+- 05：镜头语言、动作组织、空间时序、转场、资产引用错误时重跑。
+- 06：视频模型语言、参考图、模型参数错误时重跑。
 
-- `episode_support`
-- `scene_context`
-- `scene_spatial_timeline`
-- `locked_assets`
-- `neighboring_shots`
+不设置独立块级分镜节点。以后如需要镜头小块重跑，应作为 05 内部能力实现。
 
-局部重跑不得改写锁定项。
+## 资产衔接原则
 
-## 核心抽象
+最终生产状态：
 
-### StoryboardProject
+- 05/06 必须引用资产真源 ID、版本和真源图片。
+- LLM 不允许临时发明资产名称。
+- 如发现资产真源问题，标记返回资产审阅修正。
 
-本地项目状态。后续可迁移到后端数据库。
+当前工程阶段：
 
-字段：
+- 先让 01-06 分镜工作流独立跑通。
+- 暂不强制接资产审阅，以免资产阶段未完成的设计影响分镜阶段验证。
+- Prompt 中必须明确当前是资产占位，禁止发明最终资产 ID。
 
-- `projectId`
-- `name`
-- `updatedAt`
-- `script`
-- `options`
-- `analysis`
-- `latestRun`
-- `versions`
+## Artifact 设计
 
-### ProjectVersion
+所有节点产物必须保持可被后续节点直接消费，运行追踪信息必须分离。
 
-项目保存点。
+当前分镜阶段节点产物保存为：
 
-字段：
+```text
+项目文件夹/
+  artifacts/
+    story_workflow/
+      01A.json       # 纯业务 JSON，只保存该节点 output
+      01A.meta.json  # UI/运行状态，不作为下游变量输入
+      01B.json
+      01B.meta.json
+      ...
+```
 
-- `versionId`
-- `name`
-- `createdAt`
-- `summary`
+`{node}.json` 只允许保存 LLM 输出或人工修正后的业务结构，例如：
 
-当前版本只记录摘要和保存点，后续需要补完整 diff、真源快照和回滚。
+- 叙事结构
+- 角色弧线
+- 伏笔风险
+- 章节任务卡
+- 单集任务卡
+- 场次简报
+- 分镜脚本
+- 视频提示词
 
-### ArtifactRecord
+`{node}.json` 禁止混入：
 
-统一产物记录。所有中间产物和最终产物都必须通过 Artifact Store 追踪。
-
-字段：
-
-- `artifactId`
-- `kind`
-- `stageId`
-- `role`
+- `nodeId`
 - `title`
-- `summary`
-- `sourceRefs`
-- `downstreamRefs`
+- `status`
 - `updatedAt`
-- `reliability`
-
-### LockRecord
-
-锁定状态。
-
-字段：
-
-- `lockId`
-- `scope`
-- `targetId`
-- `label`
-- `status`
-- `reason`
-- `updatedAt`
-
-### TaskRecord
-
-任务状态。
-
-字段：
-
-- `taskId`
-- `stageId`
-- `label`
-- `status`
-- `scope`
-- `targetId`
-- `updatedAt`
-- `detail`
-
-### PipelineRun
-
-一次可追踪的管线运行。
-
-字段：
-
-- `runId`
-- `projectId`
-- `startedAt`
-- `finishedAt`
-- `status`
-- `trigger`
-- `stageResults`
-- `logs`
-
-### StageResult
-
-一个阶段的执行结果。
-
-字段：
-
-- `stageId`
-- `status`
-- `inputRefs`
-- `outputRefs`
-- `startedAt`
-- `finishedAt`
-- `durationMs`
-- `executor`
-- `artifactSummary`
+- `promptId`
+- `inputSummary`
+- `rawText`
 - `error`
-- `logs`
 
-### Dev / Execution Log
+这些字段只允许出现在 `{node}.meta.json` 或后端 LLM 日志中。后续节点渲染变量时，只读取 `{node}.json` 的业务内容；如果没有业务内容，则传空，不用 `rawText` 兜底。
 
-开发阶段必须能看到管线运行日志。
+辅助字段也必须保持克制。当前开发阶段允许保留必要的状态、错误和排查信息；后续迭代要定期收紧 `{node}.meta.json` 和日志字段，凡是不服务于 UI 状态、错误排查、调用回放或明确调试需求的字段，都应删除，避免项目文件膨胀和无效读取。
 
-日志至少记录：
+## 日志
+
+LLM 调用必须记录：
 
 - 阶段 ID
-- 执行器类型：rule / llm / image / export
-- 输入引用
-- 输出引用
+- Prompt ID
+- 模型
+- Base URL
+- 输入 messages
+- 输入字数
+- 输出原文
+- 输出字数
 - 耗时
-- 错误
-- 人工修改
-- 重跑原因
+- 错误信息
 
-当前前端已有底部开发日志台。现在只接前端规则和操作日志，后续接真实 `PipelineRun`。
+当前由 `server/logs/service.py` 写入本机日志，并在任务记录/流程配置中查看。
 
-### LlmExecutor
+## Rulepack
 
-P1 起新增模型执行器抽象。
+Prompt 文件放在 `rulepacks/default/`。
 
-字段：
+分镜阶段当前文件：
 
-- `mode`: `openai-compatible`
-- `model`
-- `baseUrl`
-- `hasApiKey`
+- `story_workflow_01a_structure/prompt.md`
+- `story_workflow_01b_characters/prompt.md`
+- `story_workflow_01c_risks/prompt.md`
+- `story_workflow_01d_bible/prompt.md`
+- `story_workflow_02_chapters/prompt.md`
+- `story_workflow_03_episode_card/prompt.md`
+- `story_workflow_04_scene_brief/prompt.md`
+- `story_workflow_05_storyboard/prompt.md`
+- `story_workflow_06_video_prompt/prompt.md`
 
-当前通过本地 `/api/llm/chat` 代理调用 DeepSeek/OpenAI-compatible 接口。
-
-前端不再提供 Mock 选项；调用失败必须进入执行日志。
-
-已接入阶段：
-
-- `01 clean_script`
-- `03 build_episode_support`
-- `04 plan_scene_context`
-
-真实 API 接入时必须保持同一输出契约，不允许让后续页面直接依赖模型原始文本。
-
-### P1 Schema
-
-P1 中间产物必须经过 runtime schema 校验。
-
-当前 schema：
-
-- `ScriptCleanArtifact`
-- `EpisodeSupportArtifact`
-- `SceneContextArtifact`
-
-要求：
-
-- 每条事实必须有 `sourceRefs`
-- 每条辅助信息必须有 `useAs`
-- 每条辅助信息必须有 `usedBy`
-- 空间时序必须标注可靠性
-- 不可靠信息只能进入 `needs_review`，不能当锁定结论使用
-
-### PipelineStage
-
-一个可独立执行、可重跑、可缓存的阶段。
-
-字段：
-
-- `id`
-- `name`
-- `input`
-- `output`
-- `executor`
-- `status`
-- `dependencies`
-- `granularity`
-- `artifactRole`
-- `purpose`
-- `lockPolicy`
-- `rerunScopes`
-
-### RulePack
-
-规则包，决定某一类任务如何处理。
-
-示例：
-
-- 剧本清洗规则包
-- 短剧分镜规则包
-- 生图提示词规则包
-- 视频提示词规则包
-
-### GenreProfile
-
-题材配置。
-
-示例：
-
-- 都市情感
-- 悬疑
-- 甜宠
-- 复仇
-
-### DirectorProfile
-
-导演/镜头风格配置。
-
-示例：
-
-- 强冲突快节奏
-- 冷静写实
-- 高压悬疑
-
-### OutputAdapter
-
-输出适配器。
-
-示例：
-
-- 标准 JSON/CSV
-- 平台 A 格式
-- 平台 B 格式
-- 生图工具格式
+后续不同项目类型应加载不同 rulepack，而不是改页面代码。
 
 ## 长文本策略
 
-50000 字剧本不能一次性处理。
+50000 字剧本可能无法稳定一次完成全部分析。
 
 必须支持：
 
-- 分集
-- 分场
-- 分块
-- 摘要
-- 上下文滚动更新
-- 中间产物保存
-- 局部重跑
-- 失败重试
+- 全剧层可拆成 01A/01B/01C 多次调用。
+- 超大剧本可分段提炼后汇总。
+- 02 可按章节或批次调用。
+- 节点产物必须缓存，支持局部重跑。
+- 失败节点不影响已完成节点产物。
 
 ## 当前实现状态
 
-当前为前端原型：
+已实现：
 
-- 已有基础剧本校验
-- 已有规则版资产/分镜/提示词生成
-- 已有规则版上下文包
-- 已有项目 ZIP 导出
+- FastAPI 本地后端。
+- 项目根目录、项目读写、剧本分集保存。
+- LLM 配置和调用日志。
+- 生图 provider 配置与资产候选/真源图片流程。
+- 01-06 分镜阶段接口骨架和 Prompt 文件。
+- 剧本统筹、分镜规划、视频生成三个一级页面。
 
-未实现：
+仍需实现：
 
-- 后端
-- 数据库
-- 任务队列
-- LLM 执行器
-- 生图执行器
-- 真实 Pipeline 状态机
+- 01/02 的分批策略和汇总策略。
+- 04 是否独立执行的配置开关。
+- 05/06 与资产真源的正式衔接。
+- 异步任务队列。
+- 节点输出 schema 校验和人工编辑保存。
+- 视频生成候选与人工 QA。

@@ -55,6 +55,9 @@ export interface BackendRulepackPrompt {
   stage: string;
   path: string;
   variables: string[];
+  source?: string;
+  readonly?: boolean;
+  activeVersionId?: string;
 }
 
 export interface BackendRulepack {
@@ -67,6 +70,31 @@ export interface BackendRulepack {
 export interface BackendPromptDetail {
   prompt: BackendRulepackPrompt;
   content: string;
+  version?: BackendPromptVersion;
+}
+
+export interface BackendPromptVersion {
+  id: string;
+  promptId: string;
+  name: string;
+  description: string;
+  content: string;
+  source: "official" | "user" | string;
+  readonly: boolean;
+  variables: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BackendPromptTemplateGroup {
+  prompt: BackendRulepackPrompt;
+  official: BackendPromptVersion;
+  userVersions: BackendPromptVersion[];
+  activeVersionId: string;
+}
+
+export interface BackendPromptLibrary {
+  groups: BackendPromptTemplateGroup[];
 }
 
 export interface BackendLlmLog {
@@ -182,8 +210,39 @@ export function listBackendRulepacks() {
   return backendRequest<{ rulepacks: BackendRulepack[] }>("/api/rulepacks");
 }
 
+export function loadBackendPromptLibrary() {
+  return backendRequest<BackendPromptLibrary>("/api/rulepacks/library");
+}
+
 export function loadBackendPrompt(promptId: string) {
   return backendRequest<BackendPromptDetail>(`/api/rulepacks/prompts/${encodeURIComponent(promptId)}`);
+}
+
+export function createBackendPromptVersion(input: { promptId: string; sourceVersionId?: string; name?: string; description?: string; content?: string }) {
+  return backendRequest<{ version: BackendPromptVersion; library: BackendPromptLibrary }>("/api/rulepacks/versions", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateBackendPromptVersion(versionId: string, input: { name?: string; description?: string; content?: string }) {
+  return backendRequest<{ version: BackendPromptVersion; library: BackendPromptLibrary }>(`/api/rulepacks/versions/${encodeURIComponent(versionId)}`, {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteBackendPromptVersion(versionId: string) {
+  return backendRequest<{ ok: true; library: BackendPromptLibrary }>(`/api/rulepacks/versions/${encodeURIComponent(versionId)}`, {
+    method: "DELETE",
+  });
+}
+
+export function activateBackendPromptVersion(promptId: string, versionId: string) {
+  return backendRequest<{ version: BackendPromptVersion; library: BackendPromptLibrary }>("/api/rulepacks/prompts/active", {
+    method: "PUT",
+    body: JSON.stringify({ promptId, versionId }),
+  });
 }
 
 export function listBackendLlmLogs(limit = 80) {

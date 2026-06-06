@@ -6,6 +6,7 @@
 
 - [需求方案](./requirements.md)
 - [产品与交互设计方案](./product-design.md)
+- [竖屏短剧 LLM 分层工作流需求设计](./vertical-short-drama-workflow.md)
 - [UI 布局方案](./ui-layout.md)
 - [技术架构方案](./architecture.md)
 - [追踪矩阵](./traceability.md)

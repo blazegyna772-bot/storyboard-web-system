@@ -10,6 +10,7 @@ from server.api.logs import router as logs_router
 from server.api.llm import router as llm_router
 from server.api.system import router as system_router
 from server.api.assets import router as assets_router
+from server.api.story_workflow import router as story_workflow_router
 
 app = FastAPI(title="Script Storyboard Backend", version="0.1.0")
 
@@ -28,6 +29,7 @@ app.include_router(logs_router)
 app.include_router(llm_router)
 app.include_router(system_router)
 app.include_router(assets_router)
+app.include_router(story_workflow_router)
 
 
 @app.get("/api/health")

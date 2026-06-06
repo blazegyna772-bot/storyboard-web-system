@@ -352,13 +352,14 @@ async def extract_asset_records(root_path: Path, project_id: str, kind: str) -> 
     script = read_project_script_text(base)
     if not script.strip():
         raise ValueError("当前项目没有可用于资产提取的剧本")
-    prompt = read_prompt(config["prompt"])["content"]
+    prompt_detail = read_prompt(config["prompt"])
+    prompt = prompt_detail["content"]
     system_prompt = prompt.replace("{{全集剧本}}", script)
     response = await call_openai_compatible(
         LlmChatRequest(
             stageId=config["stage"],
             label=config["label"],
-            promptId=config["prompt"],
+            promptId=prompt_detail.get("version", {}).get("id") or config["prompt"],
             jsonMode=True,
             maxTokens=12000,
             messages=[
