@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 import base64
@@ -354,7 +355,11 @@ async def extract_asset_records(root_path: Path, project_id: str, kind: str) -> 
         raise ValueError("当前项目没有可用于资产提取的剧本")
     prompt_detail = read_prompt(config["prompt"])
     prompt = prompt_detail["content"]
-    system_prompt = prompt.replace("{{全集剧本}}", script)
+    system_prompt = render_asset_prompt(prompt, {
+        "全集剧本": script,
+        "角色概要": read_story_workflow_artifact_text(base, "character_summary") if kind == "characters" else "",
+        "信息连续性": read_story_workflow_artifact_text(base, "continuity") if kind in {"scenes", "props"} else "",
+    })
     response = await call_openai_compatible(
         LlmChatRequest(
             stageId=config["stage"],
@@ -371,8 +376,83 @@ async def extract_asset_records(root_path: Path, project_id: str, kind: str) -> 
     records = parse_asset_records(response, kind)
     bundle = read_asset_bundle(root_path, project_id)
     bundle.records[kind] = records
+    bundle.trueSources[kind] = [build_true_source_from_record(kind, record, index) for index, record in enumerate(records)]
     write_json(base / "records" / config["file"], records)
+    write_json(base / "true_sources" / f"{kind}.json", bundle.trueSources[kind])
     return read_asset_bundle(root_path, project_id)
+
+
+def render_asset_prompt(template: str, variables: dict[str, str]) -> str:
+    rendered = template
+    for key, value in variables.items():
+        rendered = rendered.replace("{{" + key + "}}", value)
+    return rendered
+
+
+def read_story_workflow_artifact_text(base: Path, node_id: str) -> str:
+    data = read_json(base / "artifacts" / "story_workflow" / f"{node_id}.json", None)
+    if not isinstance(data, dict) or not data:
+        return ""
+    return json.dumps(data, ensure_ascii=False, indent=2)
+
+
+def build_true_source_from_record(kind: str, record: dict[str, Any], index: int) -> dict[str, str]:
+    if kind == "characters":
+        base_name = str(record.get("version_of") or infer_asset_base_name(str(record.get("name") or "")) or record.get("name") or "")
+        name = str(record.get("name") or "")
+        return {
+            "id": str(record.get("id") or build_asset_id("CHAR", base_name, name, index)),
+            "name": name,
+            "base_name": base_name,
+            "appearance": str(record.get("appearance") or ""),
+            "outfit": str(record.get("outfit") or ""),
+            "image_prompt": "，".join(item for item in [str(record.get("appearance") or ""), str(record.get("outfit") or "")] if item),
+            "continuity": "保持同一版本的年龄感、发型、脸型、服装结构和关键配饰一致。",
+            "status": "draft",
+        }
+    if kind == "scenes":
+        name = str(record.get("name") or "")
+        visual_description = str(record.get("visual_description") or "")
+        fixed_elements = str(record.get("fixed_elements") or "")
+        return {
+            "id": str(record.get("id") or build_asset_id("SCENE", name, name, index)),
+            "name": name,
+            "description": visual_description,
+            "fixed_elements": fixed_elements,
+            "aliases": str(record.get("aliases") or ""),
+            "first_seen": str(record.get("first_seen") or ""),
+            "state_trigger": str(record.get("state_trigger") or ""),
+            "image_prompt": "，".join(item for item in [name, visual_description, fixed_elements] if item),
+            "continuity": "保持空间结构、固定陈设、光源方向和可复用角度一致。",
+            "status": "draft",
+        }
+    name = str(record.get("name") or "")
+    appearance = str(record.get("appearance") or "")
+    state_changes = str(record.get("state_changes") or "")
+    return {
+        "id": str(record.get("id") or build_asset_id("PROP", name, name, index)),
+        "name": name,
+        "description": "，".join(item for item in [appearance, state_changes] if item),
+        "appearance": appearance,
+        "aliases": str(record.get("aliases") or ""),
+        "holder_or_location": str(record.get("holder_or_location") or ""),
+        "state_changes": state_changes,
+        "first_seen": str(record.get("first_seen") or ""),
+        "plot_role": str(record.get("plot_role") or ""),
+        "image_prompt": "，".join(item for item in [name, appearance] if item),
+        "continuity": "保持外观、材质、尺寸、持有人和状态变化一致。",
+        "status": "draft",
+    }
+
+
+def infer_asset_base_name(name: str) -> str:
+    return re.split(r"[-－—_/（(]", name.strip(), maxsplit=1)[0].strip()
+
+
+def build_asset_id(prefix: str, base_name: str, name: str, index: int) -> str:
+    raw = base_name or name or str(index + 1)
+    slug = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "", raw).upper()
+    return f"{prefix}-{slug or index + 1}-{index + 1:02d}"
 
 
 def read_project_script_text(base: Path) -> str:

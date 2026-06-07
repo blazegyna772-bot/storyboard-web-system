@@ -132,16 +132,27 @@ def write_project(root_path: Path, project: StoryboardProject) -> StoryboardProj
     (base / "exports").mkdir(parents=True, exist_ok=True)
 
     # Keep episode text separate from project metadata, so large scripts are not read for lists.
-    for old_file in episodes_dir.glob("*.txt"):
-        old_file.unlink()
     episodes = project.analysis.get("episodes") if isinstance(project.analysis, dict) else None
-    if episodes:
-        for episode in episodes:
-            episode_id = episode.get("episodeId") or "EP01"
-            source_text = episode.get("sourceText") or ""
+    episode_texts = [
+        (str(episode.get("episodeId") or "EP01"), str(episode.get("sourceText") or ""))
+        for episode in episodes or []
+        if isinstance(episode, dict)
+    ]
+    has_episode_text = any(text.strip() for _, text in episode_texts)
+    has_project_script = bool(project.script.strip())
+    if has_episode_text:
+        for old_file in episodes_dir.glob("*.txt"):
+            old_file.unlink()
+        for episode_id, source_text in episode_texts:
             (episodes_dir / f"{episode_id}.txt").write_text(source_text, encoding="utf-8")
-    elif project.script:
+    elif has_project_script:
+        for old_file in episodes_dir.glob("*.txt"):
+            old_file.unlink()
         (episodes_dir / "EP01.txt").write_text(project.script, encoding="utf-8")
+    elif any(episodes_dir.glob("*.txt")):
+        existing_manifest = read_json(base / "project.json", None)
+        if isinstance(existing_manifest, dict) and isinstance(existing_manifest.get("analysis"), dict):
+            project.analysis = existing_manifest["analysis"]
 
     manifest = project.model_dump()
     manifest["script"] = ""

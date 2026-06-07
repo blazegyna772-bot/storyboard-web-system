@@ -158,8 +158,8 @@ export const defaultPipelineConfig: PipelineConfig = {
     },
     {
       id: "plan_scene_storyboard",
-      name: "场级分镜规划",
-      description: "以整场戏为边界生成分镜规划和场内空间时序。",
+      name: "场级分镜统筹",
+      description: "以整场戏为边界生成分镜统筹和场内空间时序。",
       granularity: "scene",
       artifactRole: "final",
       purpose: "首次生成时建立视听设计、镜头拆分、空间站位和连续性。",
@@ -173,7 +173,7 @@ export const defaultPipelineConfig: PipelineConfig = {
     },
     {
       id: "generate_block_shots",
-      name: "块级分镜执行",
+      name: "局部分镜重跑",
       description: "在锁定的集级/场级状态下，对单块镜头做生成或局部重生成。",
       granularity: "block",
       artifactRole: "final",
@@ -221,7 +221,7 @@ export const defaultPipelineConfig: PipelineConfig = {
       description: "按输出适配器生成交付文件。",
       granularity: "export",
       artifactRole: "delivery",
-      purpose: "输出资产描述/提示词、分镜规划/视频提示词和交付文件。",
+      purpose: "输出资产描述/提示词、分镜统筹/视频提示词和交付文件。",
       inputRefs: ["assets", "asset_image_prompts", "shots", "prompts"],
       outputRefs: ["delivery_files"],
       executor: "export",

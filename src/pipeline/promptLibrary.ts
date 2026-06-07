@@ -194,7 +194,7 @@ function createDefaultPromptLibrary(): PromptLibraryState {
         { key: "分集剧本", label: "分集剧本", description: "当前集完整剧本文本。" },
       ],
       systemTemplate:
-        "你只提取集级辅助信息。它辅助后续分镜规划和视频提示词，但不能替代具体执行。只保留当前块/单镜头看不到、而整集尺度能看见的信息；不要写镜头、不要写具体站位、不要生成提示词、不要重复局部剧本已经明示的信息。每条信息必须说明怎么用、给谁用、来源可靠性。",
+        "你只提取集级辅助信息。它辅助后续分镜统筹和视频提示词，但不能替代具体执行。只保留当前块/单镜头看不到、而整集尺度能看见的信息；不要写镜头、不要写具体站位、不要生成提示词、不要重复局部剧本已经明示的信息。每条信息必须说明怎么用、给谁用、来源可靠性。",
       userTemplate: "集编号：{{集编号}}\n\n请从以下分集剧本提取集级辅助信息。\n\n{{分集剧本}}",
       outputContract:
         '只输出 JSON，不要 Markdown。episodeId 必须是 "{{集编号}}"。结构：{"episodeId":"{{集编号}}","revealOrder":[],"emotionArc":[],"relationshipConstraints":[],"propContinuity":[],"visualStrategy":[],"forbiddenEarlyReveals":[]}。数组元素结构统一为：{"id":"...","fact":"...","useAs":"constraint|parameter|warning","usedBy":["plan_scene_context|plan_scene_storyboard|generate_block_shots|build_video_prompts"],"sourceRefs":[{"refId":"line:1","text":"原文片段","confidence":"explicit|inferred|needs_review"}],"reliability":"explicit|inferred|needs_review"}。没有可靠信息时输出空数组。',

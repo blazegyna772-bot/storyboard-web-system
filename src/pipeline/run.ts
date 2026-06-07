@@ -74,7 +74,7 @@ export async function runLocalPipeline(script: string, options: AnalysisOptions,
   });
   pushSimulatedStage(stageResults, logs, findStage("plan_scene_storyboard"), {
     artifactSummary: "规则版镜头拆分，尚非场级视听规划。",
-    blockReason: "LLM executor 未接入，未生成真实场级分镜规划。",
+    blockReason: "LLM executor 未接入，未生成真实场级分镜统筹。",
   });
   pushSimulatedStage(stageResults, logs, findStage("generate_block_shots"), {
     artifactSummary: `${enrichedAnalysis.episodes.reduce((sum, episode) => sum + episode.shots.length, 0)} 个规则版镜头。`,

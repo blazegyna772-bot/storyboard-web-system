@@ -46,9 +46,9 @@ export function buildAssetPromptPrompt(analysis: ScriptAnalysis, episode: Episod
 }
 
 export function describeStagePromptUse(stage: PipelineStage) {
-  if (stage.id === "clean_script") return "清洗稿 + 审校疑点，作为 02 的输入源。";
-  if (stage.id === "build_episode_support") return "集级辅助，作为 04/06/07/08 的约束或参数。";
-  if (stage.id === "plan_scene_context") return "场级连续性，作为 06 首次规划与 07/08 局部执行的锁定上下文。";
+  if (stage.id === "clean_script") return "清洗稿 + 审校疑点，作为后续剧本统筹输入源。";
+  if (stage.id === "build_episode_support") return "集级辅助，作为后续场级与局部重跑的约束或参数。";
+  if (stage.id === "plan_scene_context") return "场级连续性，作为首次规划与局部重跑的锁定上下文。";
   if (stage.id === "extract_asset_prompts") return "LLM 从剧本识别资产，并输出最终资产描述和生图提示词。";
   return "当前阶段暂未配置 Prompt 模板。";
 }

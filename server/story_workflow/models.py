@@ -5,7 +5,17 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
-WorkflowNodeId = Literal["01A", "01B", "01C", "01D", "02", "03", "04", "05", "06"]
+WorkflowNodeId = Literal[
+    "story_map",
+    "character_summary",
+    "continuity",
+    "series_summary",
+    "chapter_summary",
+    "episode_summary",
+    "scene_summary",
+    "storyboard_design",
+    "video_prompt",
+]
 
 
 class WorkflowNode(BaseModel):
@@ -60,9 +70,12 @@ class RunWorkflowAllBody(BaseModel):
     nodeIds: list[WorkflowNodeId] = Field(default_factory=list)
     episodeId: str | None = None
     sceneId: str | None = None
+    chapterId: str | None = None
+    chapterIds: list[str] = Field(default_factory=list)
     maxTokens: int | None = None
 
 
 class UpdateWorkflowArtifactBody(BaseModel):
     output: dict[str, Any] = Field(default_factory=dict)
     rawText: str = ""
+    chapterId: str | None = None

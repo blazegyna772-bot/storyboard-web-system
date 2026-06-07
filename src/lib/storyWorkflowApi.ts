@@ -1,6 +1,15 @@
 import { backendRequest } from "./backendApi";
 
-export type StoryWorkflowNodeId = "01A" | "01B" | "01C" | "01D" | "02" | "03" | "04" | "05" | "06";
+export type StoryWorkflowNodeId =
+  | "story_map"
+  | "character_summary"
+  | "continuity"
+  | "series_summary"
+  | "chapter_summary"
+  | "episode_summary"
+  | "scene_summary"
+  | "storyboard_design"
+  | "video_prompt";
 
 export interface StoryWorkflowNode {
   id: StoryWorkflowNodeId;
@@ -47,11 +56,17 @@ export interface RunStoryWorkflowNodeInput {
   episodeId?: string;
   sceneId?: string;
   chapterId?: string;
+  chapterIds?: string[];
   maxTokens?: number;
 }
 
 export function loadStoryWorkflowState(projectId: string) {
   return backendRequest<StoryWorkflowState>(`/api/story-workflow/${encodeURIComponent(projectId)}`);
+}
+
+export function loadStoryWorkflowArtifact(projectId: string, nodeId: StoryWorkflowNodeId, input: { chapterId?: string } = {}) {
+  const query = input.chapterId ? `?chapterId=${encodeURIComponent(input.chapterId)}` : "";
+  return backendRequest<{ artifact: StoryWorkflowArtifact | null }>(`/api/story-workflow/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(nodeId)}${query}`);
 }
 
 export function runStoryWorkflowNode(projectId: string, input: RunStoryWorkflowNodeInput) {
@@ -68,7 +83,7 @@ export function runStoryWorkflowAll(projectId: string, input: RunStoryWorkflowNo
   });
 }
 
-export function saveStoryWorkflowArtifact(projectId: string, nodeId: StoryWorkflowNodeId, input: { output?: Record<string, unknown>; rawText?: string }) {
+export function saveStoryWorkflowArtifact(projectId: string, nodeId: StoryWorkflowNodeId, input: { output?: Record<string, unknown>; rawText?: string; chapterId?: string }) {
   return backendRequest<{ artifact: StoryWorkflowArtifact }>(`/api/story-workflow/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(nodeId)}`, {
     method: "PUT",
     body: JSON.stringify(input),
