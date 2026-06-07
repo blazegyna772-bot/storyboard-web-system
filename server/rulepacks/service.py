@@ -56,8 +56,7 @@ def list_prompt_library() -> PromptLibrary:
     for pack in list_rulepacks():
         for prompt in pack.prompts:
             official = official_version(prompt)
-            official_backups = official_backup_versions(prompt)
-            user_versions = official_backups + [PromptVersion(**item) for item in user_store.get("versions", {}).get(prompt.id, []) if isinstance(item, dict)]
+            user_versions = [PromptVersion(**item) for item in user_store.get("versions", {}).get(prompt.id, []) if isinstance(item, dict)]
             active_id = get_active_version_id(prompt.id)
             groups.append(
                 PromptTemplateGroup(
@@ -161,9 +160,6 @@ def get_prompt_version(prompt_id: str, version_id: str) -> PromptVersion:
     official = official_version(prompt)
     if version_id == official.id:
         return official
-    for backup in official_backup_versions(prompt):
-        if version_id == backup.id:
-            return backup
     for item in read_prompt_store().get("versions", {}).get(prompt_id, []):
         if item.get("id") == version_id:
             return PromptVersion(**item)
@@ -199,36 +195,8 @@ def official_version(prompt: RulepackPrompt) -> PromptVersion:
     )
 
 
-def official_backup_versions(prompt: RulepackPrompt) -> list[PromptVersion]:
-    prompt_path = Path(prompt.path)
-    versions: list[PromptVersion] = []
-    for backup_path in sorted(prompt_path.parent.glob("prompt.bak*.md")):
-        content = backup_path.read_text(encoding="utf-8")
-        suffix = backup_path.name.removeprefix("prompt.").removesuffix(".md")
-        versions.append(
-            PromptVersion(
-                id=official_backup_version_id(prompt.id, backup_path.name),
-                promptId=prompt.id,
-                name=f"官方 - {prompt.name} - {suffix}",
-                description="系统内置官方备份版本，只读，不可修改。",
-                content=content,
-                source="official",
-                readonly=True,
-                variables=sorted(set(VARIABLE_RE.findall(content))),
-                createdAt="",
-                updatedAt="",
-            )
-        )
-    return versions
-
-
 def official_version_id(prompt_id: str) -> str:
     encoded = base64.urlsafe_b64encode(prompt_id.encode("utf-8")).decode("ascii").rstrip("=")
-    return f"official-{encoded}"
-
-
-def official_backup_version_id(prompt_id: str, filename: str) -> str:
-    encoded = base64.urlsafe_b64encode(f"{prompt_id}:{filename}".encode("utf-8")).decode("ascii").rstrip("=")
     return f"official-{encoded}"
 
 
