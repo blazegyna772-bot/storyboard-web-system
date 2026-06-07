@@ -201,6 +201,7 @@ function App() {
   const [aspectRatio, setAspectRatio] = useState(() => activeProject.options.aspectRatio);
   const [contentType, setContentType] = useState(() => activeProject.options.contentType);
   const [selectedEpisodeId, setSelectedEpisodeId] = useLocalState("selected-episode", "EP01");
+  const [storyboardExecutionModeRaw, setStoryboardExecutionMode] = useLocalState("storyboard-execution-mode", "integrated");
   const [analysis, setAnalysis] = useState<ScriptAnalysis>(() => activeProject.analysis);
   const [hasDraftChanges, setHasDraftChanges] = useState(false);
   const [lastGeneratedAt, setLastGeneratedAt] = useState(() => new Date().toLocaleTimeString("zh-CN", { hour12: false }));
@@ -242,6 +243,7 @@ function App() {
     [genreProfile, directorProfile, targetShotSeconds, aspectRatio, contentType],
   );
   const selectedEpisode = analysis.episodes.find((episode) => episode.episodeId === selectedEpisodeId) ?? analysis.episodes[0];
+  const storyboardExecutionMode: StoryboardExecutionMode = storyboardExecutionModeRaw === "separate" ? "separate" : "integrated";
   const isCollapsed = isNavCollapsed === "true";
   const [llmConfig, setLlmConfig] = useState<LlmExecutorConfig>(() => loadLlmExecutorConfig());
   const [backendHealth, setBackendHealth] = useState<BackendHealth | null>(null);
@@ -652,7 +654,7 @@ function App() {
     }
   }
 
-  async function handleRunStoryWorkflowNode(nodeId: StoryWorkflowNodeId, options: { chapterId?: string; chapterIds?: string[] } = {}) {
+  async function handleRunStoryWorkflowNode(nodeId: StoryWorkflowNodeId, options: StoryWorkflowRunOptions = {}) {
     if (!activeProject.projectId || runningStoryNodeId || runningStoryBatchLabel) return null;
     const nodeTitle = storyWorkflow?.nodes.find((node) => node.id === nodeId)?.title ?? nodeId;
     setRunningStoryNodeId(nodeId);
@@ -663,6 +665,7 @@ function App() {
         episodeId: selectedEpisodeId,
         sceneId: selectedWorkflowSceneId,
         chapterId: options.chapterId,
+        executionMode: options.executionMode,
       });
       setStoryWorkflow((current) => {
         if (!current) return current;
@@ -676,6 +679,7 @@ function App() {
         };
       });
       void refreshBackendStatus();
+      void loadStoryWorkflowForProject(activeProject.projectId);
       appendLog("story-workflow", "success", `${nodeTitle} 执行完成`, nodeId === "chapter_summary" ? `章节概要已写入 ${options.chapterId || "当前章节"} 对应的 chapter_summary_xx.json。` : `${result.artifact.title} 已写入 artifacts/story_workflow/${nodeId}.json。`);
       showToast(`${nodeTitle} 执行完成`);
       return result.artifact;
@@ -690,7 +694,7 @@ function App() {
     }
   }
 
-  async function handleRunStoryWorkflowNodes(nodeIds: StoryWorkflowNodeId[], label: string, options: { chapterId?: string; chapterIds?: string[] } = {}) {
+  async function handleRunStoryWorkflowNodes(nodeIds: StoryWorkflowNodeId[], label: string, options: StoryWorkflowRunOptions = {}) {
     if (!activeProject.projectId || runningStoryNodeId || runningStoryBatchLabel) return;
     setRunningStoryBatchLabel(label);
     const nodeTitles = nodeIds.map((nodeId) => storyWorkflow?.nodes.find((node) => node.id === nodeId)?.title ?? nodeId);
@@ -703,6 +707,7 @@ function App() {
         sceneId: selectedWorkflowSceneId,
         chapterId: options.chapterId,
         chapterIds: options.chapterIds,
+        executionMode: options.executionMode,
       });
       setStoryWorkflow((current) => {
         if (!current) return current;
@@ -713,6 +718,7 @@ function App() {
         return { ...current, artifacts: nextArtifacts };
       });
       void refreshBackendStatus();
+      void loadStoryWorkflowForProject(activeProject.projectId);
       appendLog("story-workflow", "success", `${label} 执行完成`, `${result.artifacts.length} 个节点已写入 artifacts/story_workflow。`);
       showToast(`${label} 执行完成`);
     } catch (error) {
@@ -1250,11 +1256,13 @@ function App() {
               episodes={analysis.episodes}
               selectedEpisodeId={selectedEpisodeId}
               onSelectEpisode={setSelectedEpisodeId}
-              selectedSceneId={selectedWorkflowSceneId}
-              onSelectScene={setSelectedWorkflowSceneId}
-              runningNodeId={runningStoryNodeId}
-              runningBatchLabel={runningStoryBatchLabel}
-              onRunNode={handleRunStoryWorkflowNode}
+        selectedSceneId={selectedWorkflowSceneId}
+        onSelectScene={setSelectedWorkflowSceneId}
+        executionMode={storyboardExecutionMode}
+        onExecutionModeChange={setStoryboardExecutionMode}
+        runningNodeId={runningStoryNodeId}
+        runningBatchLabel={runningStoryBatchLabel}
+        onRunNode={handleRunStoryWorkflowNode}
               onRunNodes={(nodeIds, options) => void handleRunStoryWorkflowNodes(nodeIds, "分镜统筹", options)}
               onRefresh={() => void loadStoryWorkflowForProject(activeProject.projectId)}
             />
@@ -2634,7 +2642,10 @@ function AssetReviewView({
 type StoryWorkflowRunOptions = {
   chapterId?: string;
   chapterIds?: string[];
+  executionMode?: StoryboardExecutionMode;
 };
+
+type StoryboardExecutionMode = "integrated" | "separate";
 
 type StoryWorkflowChapterTab = {
   chapterId: string;
@@ -2688,6 +2699,8 @@ function StoryboardPlanningView({
   onSelectEpisode,
   selectedSceneId,
   onSelectScene,
+  executionMode,
+  onExecutionModeChange,
   runningNodeId,
   runningBatchLabel,
   onRunNode,
@@ -2701,6 +2714,8 @@ function StoryboardPlanningView({
   onSelectEpisode: (episodeId: string) => void;
   selectedSceneId: string;
   onSelectScene: (sceneId: string) => void;
+  executionMode: StoryboardExecutionMode;
+  onExecutionModeChange: (mode: StoryboardExecutionMode) => void;
   runningNodeId: StoryWorkflowNodeId | "";
   runningBatchLabel: string;
   onRunNode: (nodeId: StoryWorkflowNodeId, options?: StoryWorkflowRunOptions) => Promise<StoryWorkflowArtifact | null>;
@@ -2711,6 +2726,7 @@ function StoryboardPlanningView({
   const activeWorkflowEpisode = workflowEpisodes.find((episode) => episode.episodeId === selectedEpisodeId) ?? workflowEpisodes[0];
   const sceneOptions = activeWorkflowEpisode?.scenes ?? [];
   const nodes = filterStoryWorkflowNodes(state, "storyboard");
+  const runNodeIds = executionMode === "integrated" ? nodes.map((node) => node.id).filter((nodeId) => nodeId !== "scene_summary") : nodes.map((node) => node.id);
   return (
     <section className="page-stack story-workflow-page">
       <div className="page-header work-header">
@@ -2719,6 +2735,14 @@ function StoryboardPlanningView({
           <p>执行单集概要、场次概要和分镜设计。当前先不接资产审阅真源，避免流程互相牵连。</p>
         </div>
         <div className="header-actions">
+          <div className="mode-switch compact" aria-label="分镜统筹执行模式">
+            <button className={executionMode === "integrated" ? "active" : ""} onClick={() => onExecutionModeChange("integrated")}>
+              集场一体
+            </button>
+            <button className={executionMode === "separate" ? "active" : ""} onClick={() => onExecutionModeChange("separate")}>
+              集场分开
+            </button>
+          </div>
           <select value={selectedEpisodeId} onChange={(event) => onSelectEpisode(event.target.value)}>
             {(workflowEpisodes.length ? workflowEpisodes : episodes.map((episode) => ({ episodeId: episode.episodeId, title: episode.title, scenes: [] }))).map((episode) => (
               <option value={episode.episodeId} key={episode.episodeId}>
@@ -2733,7 +2757,7 @@ function StoryboardPlanningView({
               </option>
             ))}
           </select>
-          <button className="primary-button" onClick={() => onRunNodes(nodes.map((node) => node.id))} disabled={Boolean(runningNodeId || runningBatchLabel)}>
+          <button className="primary-button" onClick={() => onRunNodes(runNodeIds, { executionMode })} disabled={Boolean(runningNodeId || runningBatchLabel)}>
             <Play size={16} />
             {runningBatchLabel ? "执行中" : "运行分镜统筹"}
           </button>
@@ -2749,7 +2773,9 @@ function StoryboardPlanningView({
         artifacts={state?.artifacts ?? {}}
         runningNodeId={runningNodeId}
         runningBatchLabel={runningBatchLabel}
-        onRunNode={onRunNode}
+        onRunNode={(nodeId, options) => onRunNode(nodeId, { ...options, executionMode })}
+        disabledNodeIds={executionMode === "integrated" ? ["scene_summary"] : []}
+        disabledNodeReason="集场一体模式下，场次概要由单集概要同步生成。"
       />
     </section>
   );
@@ -2859,6 +2885,8 @@ function StoryWorkflowNodeGrid({
   runningBatchLabel,
   onRunNode,
   onRunNodes,
+  disabledNodeIds = [],
+  disabledNodeReason = "",
 }: {
   nodes: StoryWorkflowNode[];
   projectId: string;
@@ -2867,6 +2895,8 @@ function StoryWorkflowNodeGrid({
   runningBatchLabel: string;
   onRunNode: (nodeId: StoryWorkflowNodeId, options?: StoryWorkflowRunOptions) => Promise<StoryWorkflowArtifact | null>;
   onRunNodes?: (nodeIds: StoryWorkflowNodeId[], options?: StoryWorkflowRunOptions) => void;
+  disabledNodeIds?: StoryWorkflowNodeId[];
+  disabledNodeReason?: string;
 }) {
   const [activeNodeId, setActiveNodeId] = useState<StoryWorkflowNodeId | "">("");
   const [artifactView, setArtifactView] = useState<"review" | "json">("review");
@@ -2875,6 +2905,7 @@ function StoryWorkflowNodeGrid({
   const [isChapterArtifactLoading, setIsChapterArtifactLoading] = useState(false);
   const activeNode = nodes.find((node) => node.id === activeNodeId) ?? nodes[0];
   const isChapterSummary = activeNode?.id === "chapter_summary";
+  const isActiveNodeDisabled = activeNode ? disabledNodeIds.includes(activeNode.id) : false;
   const activeArtifact = isChapterSummary ? chapterArtifact ?? undefined : activeNode ? artifacts[activeNode.id] : undefined;
   const chapterTabs = useMemo(() => extractWorkflowChapterTabs(artifacts), [artifacts]);
   const selectedChapter = chapterTabs.find((chapter) => chapter.chapterId === selectedChapterId) ?? chapterTabs[0];
@@ -2976,11 +3007,12 @@ function StoryWorkflowNodeGrid({
                   </button>
                 </>
               ) : (
-                <button className="primary-button" onClick={() => onRunNode(activeNode.id)} disabled={Boolean(runningNodeId || runningBatchLabel)}>
+                <button className="primary-button" onClick={() => onRunNode(activeNode.id)} disabled={Boolean(runningNodeId || runningBatchLabel || isActiveNodeDisabled)} title={isActiveNodeDisabled ? disabledNodeReason : undefined}>
                   <Play size={16} />
-                  {runningNodeId === activeNode.id ? "执行中" : `执行${activeNode.title}`}
+                  {runningNodeId === activeNode.id ? "执行中" : isActiveNodeDisabled ? "已由单集概要生成" : `执行${activeNode.title}`}
                 </button>
               )}
+              {isActiveNodeDisabled && disabledNodeReason && <small className="story-node-disabled-note">{disabledNodeReason}</small>}
             </div>
           </section>
 
@@ -3242,6 +3274,16 @@ function ReviewEpisodeSummary({ data }: { data: Record<string, unknown> }) {
 }
 
 function ReviewSceneSummary({ data }: { data: Record<string, unknown> }) {
+  const sceneSummaries = asArray(data.scene_summaries).map(asRecord);
+  if (sceneSummaries.length) {
+    return (
+      <div className="story-artifact-review">
+        <ReviewSection title={`场次概要（${sceneSummaries.length} 场）`}>
+          <GenericObjectList rows={sceneSummaries} />
+        </ReviewSection>
+      </div>
+    );
+  }
   return (
     <div className="story-artifact-review">
       <ReviewHero title={`${textValue(data.episode_id)} / ${textValue(data.scene_id)} 导演简报`} subtitle={textValue(data.scene_dramatic_task)} />
@@ -5623,6 +5665,7 @@ const backendPromptStageCopy: Record<string, { title: string; description: strin
   story_workflow_series_summary: { title: "全集概要", description: "由后端机械合并剧情地图、角色概要、信息连续性，不做剧情判断。" },
   story_workflow_chapter_summary: { title: "章节概要", description: "生成章节任务和每集标题/一句话梗概。" },
   story_workflow_episode_summary: { title: "单集概要", description: "明确本集任务、情绪、钩子和镜头强调点。" },
+  "story_workflow_episode_summary_integrated": { title: "集场一体", description: "一次调用同时生成单集概要和场次概要。" },
   story_workflow_scene_summary: { title: "场次概要", description: "补足场内调度、潜台词和连续性边界。" },
   story_workflow_storyboard_design: { title: "分镜设计", description: "按场输出可审阅分镜设计。" },
   story_workflow_video_prompt: { title: "视频提示词", description: "把分镜转换为视频模型提示词草案。" },

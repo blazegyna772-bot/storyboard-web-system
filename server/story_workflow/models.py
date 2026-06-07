@@ -63,6 +63,7 @@ class RunWorkflowNodeBody(BaseModel):
     episodeId: str | None = None
     sceneId: str | None = None
     chapterId: str | None = None
+    executionMode: Literal["integrated", "separate"] = "separate"
     maxTokens: int | None = None
 
 
@@ -72,6 +73,7 @@ class RunWorkflowAllBody(BaseModel):
     sceneId: str | None = None
     chapterId: str | None = None
     chapterIds: list[str] = Field(default_factory=list)
+    executionMode: Literal["integrated", "separate"] = "separate"
     maxTokens: int | None = None
 
 

@@ -27,6 +27,7 @@ from server.story_workflow.models import (
 
 WORKFLOW_DIR = "story_workflow"
 CHAPTER_SUMMARY_DIR = "chapter_summary"
+EPISODE_SCENE_PROMPT_PATH = "story_workflow_episode_summary_integrated/prompt.md"
 
 
 NODES: list[WorkflowNode] = [
@@ -201,7 +202,7 @@ async def run_workflow_node(project_id: str, body: RunWorkflowNodeBody) -> Workf
         write_workflow_output(base, artifact)
         return artifact
 
-    prompt, prompt_version_id = read_node_prompt(node)
+    prompt, prompt_version_id = read_node_prompt(node, body.executionMode)
     system_prompt = render_template(prompt, variables)
     user_prompt = build_user_prompt(node, variables)
 
@@ -234,15 +235,38 @@ async def run_workflow_node(project_id: str, body: RunWorkflowNodeBody) -> Workf
             )
             write_chapter_summary_output(base, node, chapter_ref, artifact)
             return artifact
-        artifact = WorkflowArtifact(
-            nodeId=node.id,
-            title=node.title,
-            status="done",
-            updatedAt=now_iso(),
-            inputSummary=input_summary,
-            output=parsed,
-            rawText=content,
-        )
+        if node.id == "episode_summary" and body.executionMode == "integrated":
+            episode_output, scene_output = normalize_episode_scene_output(parsed, variables)
+            artifact = WorkflowArtifact(
+                nodeId=node.id,
+                title=node.title,
+                status="done",
+                updatedAt=now_iso(),
+                inputSummary=input_summary,
+                output=episode_output,
+                rawText=content,
+            )
+            scene_node = require_node("scene_summary")
+            scene_artifact = WorkflowArtifact(
+                nodeId=scene_node.id,
+                title=scene_node.title,
+                status="done",
+                updatedAt=artifact.updatedAt,
+                inputSummary=input_summary,
+                output=scene_output,
+                rawText=content,
+            )
+            write_workflow_output(base, scene_artifact)
+        else:
+            artifact = WorkflowArtifact(
+                nodeId=node.id,
+                title=node.title,
+                status="done",
+                updatedAt=now_iso(),
+                inputSummary=input_summary,
+                output=parsed,
+                rawText=content,
+            )
     except Exception as exc:
         artifact = build_workflow_artifact(
             base,
@@ -278,6 +302,7 @@ async def run_workflow_all(project_id: str, body: RunWorkflowAllBody) -> list[Wo
                             episodeId=body.episodeId,
                             sceneId=body.sceneId,
                             chapterId=chapter_id,
+                            executionMode=body.executionMode,
                             maxTokens=body.maxTokens,
                         ),
                     )
@@ -290,6 +315,7 @@ async def run_workflow_all(project_id: str, body: RunWorkflowAllBody) -> list[Wo
                 episodeId=body.episodeId,
                 sceneId=body.sceneId,
                 chapterId=body.chapterId,
+                executionMode=body.executionMode,
                 maxTokens=body.maxTokens,
             ),
         )
@@ -556,11 +582,64 @@ def build_series_mechanical_summary(artifacts: dict[str, WorkflowArtifact]) -> d
     }
 
 
-def read_node_prompt(node: WorkflowNode) -> tuple[str, str]:
+def require_node(node_id: str) -> WorkflowNode:
+    node = next((item for item in NODES if item.id == node_id), None)
+    if not node:
+        raise HTTPException(status_code=500, detail=f"Missing workflow node: {node_id}")
+    return node
+
+
+def normalize_episode_scene_output(parsed: dict[str, Any], variables: dict[str, str]) -> tuple[dict[str, Any], dict[str, Any]]:
+    episode_id = variables.get("当前集编号") or "EP01"
+    episode_output = as_dict(parsed.get("episode_summary"))
+    if not episode_output:
+        episode_output = {key: value for key, value in parsed.items() if key not in {"scene_summaries", "scene_summary"}}
+    episode_output["episode_id"] = str(episode_output.get("episode_id") or episode_id)
+
+    incoming_scenes = as_list(parsed.get("scene_summaries"))
+    if not incoming_scenes and parsed.get("scene_summary"):
+        incoming_scenes = [parsed.get("scene_summary")]
+    scene_summaries: list[dict[str, Any]] = []
+    for index, item in enumerate(incoming_scenes, start=1):
+        scene = as_dict(item)
+        if not scene:
+            continue
+        scene["episode_id"] = str(scene.get("episode_id") or episode_id)
+        scene["scene_id"] = str(scene.get("scene_id") or f"SC{index:02d}")
+        scene_summaries.append(scene)
+    return episode_output, {"episode_id": episode_id, "scene_summaries": scene_summaries}
+
+
+def scene_summary_text_for_scene(artifacts: dict[str, WorkflowArtifact], scene_id: str) -> str:
+    artifact = artifacts.get("scene_summary")
+    if not artifact:
+        return ""
+    selected = select_scene_summary_output(artifact.output, scene_id)
+    if selected:
+        return json.dumps(selected, ensure_ascii=False, indent=2)
+    return artifact_text(artifacts, "scene_summary")
+
+
+def select_scene_summary_output(output: dict[str, Any], scene_id: str) -> dict[str, Any]:
+    scene_summaries = as_list(output.get("scene_summaries"))
+    if not scene_summaries:
+        return output
+    normalized_scene_id = str(scene_id or "").strip()
+    for item in scene_summaries:
+        scene = as_dict(item)
+        if str(scene.get("scene_id") or "").strip() == normalized_scene_id:
+            return scene
+    return as_dict(scene_summaries[0]) if scene_summaries else {}
+
+
+def read_node_prompt(node: WorkflowNode, execution_mode: str = "separate") -> tuple[str, str]:
     try:
+        if node.id == "episode_summary" and execution_mode == "integrated":
+            return read_active_prompt_by_path(EPISODE_SCENE_PROMPT_PATH)
         return read_active_prompt_by_path(node.promptPath)
     except FileNotFoundError:
-        raise HTTPException(status_code=500, detail=f"Missing prompt file: {node.promptPath}")
+        prompt_path = EPISODE_SCENE_PROMPT_PATH if node.id == "episode_summary" and execution_mode == "integrated" else node.promptPath
+        raise HTTPException(status_code=500, detail=f"Missing prompt file: {prompt_path}")
 
 
 def build_node_variables(base: Path, script: str, artifacts: dict[str, WorkflowArtifact], body: RunWorkflowNodeBody) -> dict[str, str]:
@@ -581,6 +660,8 @@ def build_node_variables(base: Path, script: str, artifacts: dict[str, WorkflowA
         "当前章节编号": chapter_ref["chapter_id"],
         "当前集编号": selected_episode["episodeId"],
         "当前场编号": selected_scene["sceneId"],
+        "当前集场次数": str(len(scenes)),
+        "当前集场次列表": "\n".join(f"{scene['sceneId']}：{scene['title']}" for scene in scenes),
         "前后集概要": f"上一集：{previous_episode}\n下一集：{next_episode}",
         "前后场概要": f"上一场：{previous_scene}\n下一场：{next_scene}",
         "剧情地图": artifact_text(artifacts, "story_map"),
@@ -589,7 +670,7 @@ def build_node_variables(base: Path, script: str, artifacts: dict[str, WorkflowA
         "全集概要": artifact_text(artifacts, "series_summary"),
         "当前章节概要": current_chapter_summary,
         "当前单集概要": artifact_text(artifacts, "episode_summary"),
-        "当前场次概要": artifact_text(artifacts, "scene_summary"),
+        "当前场次概要": scene_summary_text_for_scene(artifacts, selected_scene["sceneId"]),
         "当前分镜设计": artifact_text(artifacts, "storyboard_design"),
         "资产真源": "资产审阅衔接暂不接入；当前只允许使用剧本中的原名，不得发明资产 ID。",
         "视频模型规则": "竖屏短剧，默认 9:16。输出字段必须可给后续视频模型配置层继续转换。",

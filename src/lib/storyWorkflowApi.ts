@@ -57,6 +57,7 @@ export interface RunStoryWorkflowNodeInput {
   sceneId?: string;
   chapterId?: string;
   chapterIds?: string[];
+  executionMode?: "integrated" | "separate";
   maxTokens?: number;
 }
 

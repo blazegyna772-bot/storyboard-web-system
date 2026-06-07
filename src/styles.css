@@ -3983,6 +3983,14 @@ blockquote {
   gap: 8px;
 }
 
+.story-node-disabled-note {
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: right;
+}
+
 .story-node-meta {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
