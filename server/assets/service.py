@@ -249,19 +249,6 @@ def get_asset_image_path(root_path: Path, project_id: str, bucket: str, kind: st
     return target
 
 
-def get_legacy_asset_image_path(root_path: Path, project_id: str, kind: str, filename: str) -> Path:
-    if kind not in ASSET_KINDS:
-        raise ValueError("Unsupported asset kind")
-    base = get_project_base(root_path, project_id)
-    target = (base / "assets" / kind / Path(filename).name).resolve()
-    allowed_root = (base / "assets" / kind).resolve()
-    if allowed_root not in target.parents:
-        raise ValueError("Invalid image path")
-    if not target.exists():
-        raise FileNotFoundError("Image not found")
-    return target
-
-
 def resolve_project_asset_path(base: Path, source_path: str) -> Path:
     normalized = source_path.strip()
     if normalized.startswith("/api/projects/"):
@@ -465,8 +452,7 @@ def read_project_script_text(base: Path) -> str:
             if text:
                 texts.append(text)
         return "\n\n".join(texts)
-    legacy_file = base / "input" / "script.txt"
-    return legacy_file.read_text(encoding="utf-8") if legacy_file.exists() else ""
+    return ""
 
 
 def parse_character_records(response: dict[str, Any]) -> list[dict[str, Any]]:

@@ -119,9 +119,9 @@
 
 - Profile
 - Rule Pack
-- Output Adapter
-- Pipeline 阶段
-- 粒度、产物角色、锁定策略、重跑粒度
+- Providerpack / Rulepack
+- 工作流节点
+- 节点输入、节点产物、重跑粒度
 
 流程配置不是日常生产页。它用于项目前配置、换体裁/规则包、排查某阶段异常。
 

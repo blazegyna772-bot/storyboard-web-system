@@ -1,4 +1,4 @@
-import type { ImageGenerationConfig } from "./types";
+import type { ImageGenerationConfig } from "./providerConfig";
 
 export const imageConfigStorageKey = "storyboard-image-generation-config-v1";
 

@@ -1,4 +1,4 @@
-import type { LlmExecutorConfig } from "./types";
+import type { LlmExecutorConfig } from "./providerConfig";
 
 export const llmConfigStorageKey = "storyboard-llm-executor-config-v1";
 

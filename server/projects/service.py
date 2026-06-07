@@ -165,8 +165,7 @@ def read_project_script(base: Path) -> str:
     episode_files = sorted(episodes_dir.glob("*.txt"), key=lambda p: p.name)
     if episode_files:
         return "\n\n".join(text for text in (f.read_text(encoding="utf-8").strip() for f in episode_files) if text)
-    script_file = base / "input" / "script.txt"
-    return script_file.read_text(encoding="utf-8") if script_file.exists() else ""
+    return ""
 
 
 def read_project_by_folder(root_path: Path, folder_name: str, include_script: bool) -> StoryboardProject | None:

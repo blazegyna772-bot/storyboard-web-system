@@ -35,10 +35,5 @@ class StoryboardProject(BaseModel):
     script: str = ""
     options: dict[str, Any] = Field(default_factory=dict)
     analysis: dict[str, Any] = Field(default_factory=dict)
-    latestRun: dict[str, Any] | None = None
-    artifacts: list[dict[str, Any]] = Field(default_factory=list)
-    locks: list[dict[str, Any]] = Field(default_factory=list)
-    tasks: list[dict[str, Any]] = Field(default_factory=list)
-    imageCandidates: list[dict[str, Any]] = Field(default_factory=list)
 
     model_config = {"extra": "allow"}

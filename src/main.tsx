@@ -1,14 +1,12 @@
 import { StrictMode, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, MouseEvent, ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import JSZip from "jszip";
 import {
   AlertTriangle,
   CheckCircle2,
   ClipboardList,
   Database,
   Trash2,
-  Download,
   Edit3,
   Eye,
   FileText,
@@ -17,7 +15,6 @@ import {
   FolderKanban,
   Image,
   Layers3,
-  Lock,
   Menu,
   Package,
   PanelRightOpen,
@@ -34,8 +31,6 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { buildContextPack } from "./lib/contextPack";
-import type { ContextPack } from "./lib/contextPack";
 import {
   deleteProjectAssetCandidateImage,
   emptyAssetReviewBundle,
@@ -122,18 +117,11 @@ import {
 import type { ProjectStoreState, StoryboardProject } from "./lib/projectStore";
 import { buildScriptQualityReport, defaultScriptQualityRules, loadScriptQualityRules, saveScriptQualityRules } from "./lib/scriptQuality";
 import type { ScriptQualityRule } from "./lib/scriptQuality";
-import { analyzeScript, exportEpisodeBundle, formatJson, parseEpisodeBundle } from "./lib/storyboard";
-import type { AnalysisOptions, AssetDescription, EpisodeResult, ScriptAnalysis } from "./lib/storyboard";
-import { defaultOutputAdapters, defaultPipelineConfig } from "./pipeline/defaults";
-import { loadLlmExecutorConfig, normalizeLlmConfig, saveLlmExecutorConfig } from "./pipeline/llmConfig";
-import { loadImageGenerationConfig, normalizeImageConfig, saveImageGenerationConfig } from "./pipeline/imageConfig";
-import { generateAssetImage } from "./pipeline/imageGeneration";
-import type { AssetImageCandidate } from "./pipeline/imageGeneration";
-import { runLocalPipeline } from "./pipeline/run";
-import { writeEpisodeToZip, writeProjectToZip } from "./pipeline/exportAdapter";
-import { summarizePipeline } from "./pipeline/summary";
-import type { ImageGenerationConfig, LlmExecutorConfig, PipelineRun } from "./pipeline/types";
-import type { ArtifactRecord, LockRecord, TaskRecord } from "./pipeline/artifacts";
+import { analyzeScript, formatJson } from "./lib/storyboard";
+import type { AnalysisOptions, EpisodeResult, ScriptAnalysis } from "./lib/storyboard";
+import { loadLlmExecutorConfig, normalizeLlmConfig, saveLlmExecutorConfig } from "./lib/llmConfig";
+import { loadImageGenerationConfig, normalizeImageConfig, saveImageGenerationConfig } from "./lib/imageConfig";
+import type { ImageGenerationConfig, LlmExecutorConfig } from "./lib/providerConfig";
 import "./styles.css";
 
 const sampleScript = `第1集
@@ -190,7 +178,6 @@ function App() {
         script: "",
         options: fallbackOptions,
         analysis: analyzeScript("", fallbackOptions),
-        latestRun: null,
       }),
     [],
   );
@@ -207,9 +194,7 @@ function App() {
   const [hasDraftChanges, setHasDraftChanges] = useState(false);
   const [lastGeneratedAt, setLastGeneratedAt] = useState(() => new Date().toLocaleTimeString("zh-CN", { hour12: false }));
   const [toast, setToast] = useState("");
-  const [viewMode, setViewMode] = useState<"cards" | "json">("cards");
   const [isLogCollapsed, setIsLogCollapsed] = useLocalState("feedback-collapsed", "true");
-  const [latestRun, setLatestRun] = useState<PipelineRun | null>(() => activeProject.latestRun);
   const [assetReviewBundle, setAssetReviewBundle] = useState<AssetReviewBundle>(emptyAssetReviewBundle);
   const [isAssetReviewDirty, setIsAssetReviewDirty] = useState(false);
   const [runningAssetExtractKinds, setRunningAssetExtractKinds] = useState<AssetKind[]>([]);
@@ -217,21 +202,14 @@ function App() {
   const [runningStoryNodeId, setRunningStoryNodeId] = useState<StoryWorkflowNodeId | "">("");
   const [runningStoryBatchLabel, setRunningStoryBatchLabel] = useState("");
   const [selectedWorkflowSceneId, setSelectedWorkflowSceneId] = useLocalState("selected-workflow-scene", "SC01");
-  const [isGenerating, setIsGenerating] = useState(false);
   const [imageConfig, setImageConfig] = useState<ImageGenerationConfig>(() => loadImageGenerationConfig());
-  const [runningImageAssetId, setRunningImageAssetId] = useState("");
   const [devLogs, setDevLogs] = useState<DevLogEntry[]>(() => [
     createDevLog("pipeline", "info", "开发日志台已启动", "当前记录后端 LLM、资产生成和工作流节点运行状态。"),
     createDevLog("stage:01", "success", "剧本校验规则可用", "scriptQualityReport 已在前端实时计算。"),
-    createDevLog("stage:02", "info", "旧诊断管线可用", "生产流程以剧本统筹、资产审阅、分镜统筹和视频生成为准。"),
+    createDevLog("stage:02", "info", "生产流程可用", "当前流程：剧本统筹、资产审阅、分镜统筹、视频生成。"),
   ]);
   const scriptQuality = useMemo(() => buildScriptQualityReport(script), [script]);
-  const contextPack = useMemo(() => buildContextPack(analysis), [analysis]);
   const currentScriptText = useMemo(() => serializeAnalysisScript(analysis), [analysis]);
-  const pipelineSummary = useMemo(
-    () => summarizePipeline(defaultPipelineConfig, defaultOutputAdapters.find((adapter) => adapter.id === defaultPipelineConfig.outputAdapterId)),
-    [],
-  );
 
   const options: AnalysisOptions = useMemo(
     () => ({
@@ -243,7 +221,6 @@ function App() {
     }),
     [genreProfile, directorProfile, targetShotSeconds, aspectRatio, contentType],
   );
-  const selectedEpisode = analysis.episodes.find((episode) => episode.episodeId === selectedEpisodeId) ?? analysis.episodes[0];
   const storyboardExecutionMode: StoryboardExecutionMode = storyboardExecutionModeRaw === "separate" ? "separate" : "integrated";
   const isCollapsed = isNavCollapsed === "true";
   const [llmConfig, setLlmConfig] = useState<LlmExecutorConfig>(() => loadLlmExecutorConfig());
@@ -260,18 +237,15 @@ function App() {
   const [selectedBackendPromptContent, setSelectedBackendPromptContent] = useState("");
   const [backendLlmHasApiKey, setBackendLlmHasApiKey] = useState(false);
   const [backendImageHasApiKey, setBackendImageHasApiKey] = useState(false);
-  const imageCandidates = activeProject.imageCandidates ?? [];
   const runningTopTasks = useMemo(
     () => buildRunningTopTasks({
-      isGenerating,
       runningAssetExtractKinds,
-      runningImageAssetId,
       runningStoryNodeId,
       runningStoryBatchLabel,
       imageTasks: backendImageTasks,
       llmLogs: backendLlmLogs,
     }),
-    [isGenerating, runningAssetExtractKinds, runningImageAssetId, runningStoryNodeId, runningStoryBatchLabel, backendImageTasks, backendLlmLogs],
+    [runningAssetExtractKinds, runningStoryNodeId, runningStoryBatchLabel, backendImageTasks, backendLlmLogs],
   );
   const topMetrics = useMemo(() => buildTopMetrics(analysis, assetReviewBundle, storyWorkflow), [analysis, assetReviewBundle, storyWorkflow]);
 
@@ -301,7 +275,6 @@ function App() {
     setAspectRatio(project.options.aspectRatio);
     setContentType(project.options.contentType);
     setAnalysis(nextAnalysis);
-    setLatestRun(project.latestRun);
     setSelectedEpisodeId(nextAnalysis.episodes[0]?.episodeId ?? "EP01");
     setHasDraftChanges(false);
     appendLog("project", "info", `已切换到 ${project.name}`, project.folderName ?? toSafeFolderName(project.name));
@@ -321,7 +294,6 @@ function App() {
       script,
       options,
       analysis,
-      latestRun,
     });
     updateActiveProject((project) =>
       project.projectId === activeProject.projectId ? savedProject : project,
@@ -400,7 +372,6 @@ function App() {
         setProjectStore({ activeProjectId: "", projects: [] });
         setScript("");
         setAnalysis(analyzeScript("", fallbackOptions));
-        setLatestRun(null);
         appendLog("project-root", "info", "根目录暂无项目", activeRoot.rootName);
         return;
       }
@@ -472,7 +443,6 @@ function App() {
     } else {
       setScript("");
       setAnalysis(analyzeScript("", fallbackOptions));
-      setLatestRun(null);
       setHasDraftChanges(false);
     }
     setProjectPendingDelete(null);
@@ -546,23 +516,6 @@ function App() {
     void loadAndApplyProject(project);
   }
 
-  function updateLock(targetId: string, status: "locked" | "unlocked" | "needs_review", reason: string) {
-    updateActiveProject((project) => ({
-      ...project,
-      locks: project.locks.map((lockItem) =>
-        lockItem.targetId === targetId
-          ? {
-              ...lockItem,
-              status,
-              reason,
-              updatedAt: new Date().toISOString(),
-            }
-          : lockItem,
-      ),
-    }));
-    appendLog("lock", status === "locked" ? "success" : "info", `${targetId} ${status}`, reason);
-  }
-
   function updateImageConfig(config: ImageGenerationConfig) {
     const normalized = normalizeImageConfig(config);
     void saveBackendImageSettings(normalized)
@@ -575,35 +528,6 @@ function App() {
         void refreshBackendStatus();
       })
       .catch((error) => appendLog("image-config", "error", "生图配置保存失败", error instanceof Error ? error.message : "未知错误"));
-  }
-
-  async function handleGenerateAssetImage(asset: AssetDescription) {
-    if (runningImageAssetId) return;
-    setRunningImageAssetId(asset.assetId);
-    appendLog("image", "info", `开始生成 ${asset.name}`, asset.imagePrompt || asset.description);
-    const result = await generateAssetImage(asset, imageConfig);
-    updateActiveProject((project) => ({
-      ...project,
-      imageCandidates: [result.candidate, ...(project.imageCandidates ?? [])],
-    }));
-    setDevLogs((current) => [...result.logs, ...current].slice(0, 120));
-    appendLog(result.candidate.status === "done" ? "image" : "image", result.candidate.status === "done" ? "success" : "error", `${asset.name} 生图${result.candidate.status === "done" ? "完成" : "失败"}`, result.candidate.error);
-    setRunningImageAssetId("");
-  }
-
-  function handleLockImageCandidate(assetId: string, candidateId: string) {
-    updateActiveProject((project) => ({
-      ...project,
-      imageCandidates: (project.imageCandidates ?? []).map((candidate) =>
-        candidate.assetId === assetId
-          ? {
-              ...candidate,
-              status: candidate.candidateId === candidateId ? "locked" : candidate.status === "locked" ? "done" : candidate.status,
-            }
-          : candidate,
-      ),
-    }));
-    updateLock(assetId, "locked", `人工锁定候选图 ${candidateId}。`);
   }
 
   function updateAssetReviewBundle(nextBundle: AssetReviewBundle) {
@@ -743,68 +667,6 @@ function App() {
     }
   }
 
-  function handleRerun(scope: string, targetId: string) {
-    appendLog("rerun", "warning", `请求重跑 ${scope}`, `${targetId} 当前属于旧诊断管线记录；生产工作流请在剧本统筹、分镜统筹或视频生成页重跑对应节点。`);
-    void handleGenerate();
-  }
-
-  async function handleGenerate() {
-    if (isGenerating) return;
-    setIsGenerating(true);
-    const startedAt = performance.now();
-    appendLog("pipeline-run", "info", "开始生成", `${llmConfig.model} / 真实 LLM 执行。`);
-    try {
-      const output = await runLocalPipeline(script, options, llmConfig);
-      setAnalysis(output.analysis);
-      setLatestRun(output.run);
-      updateActiveProject((project) =>
-        updateProjectSnapshot(project, {
-          projectId: project.projectId,
-          name: project.name,
-          script,
-          options,
-          analysis: output.analysis,
-          latestRun: output.run,
-          artifacts: output.artifactBundle.artifacts,
-          locks: output.artifactBundle.locks,
-          tasks: output.artifactBundle.tasks,
-        }),
-      );
-      setSelectedEpisodeId(output.analysis.episodes[0]?.episodeId ?? "EP01");
-      setHasDraftChanges(false);
-      setLastGeneratedAt(new Date().toLocaleTimeString("zh-CN", { hour12: false }));
-      appendLog(
-        "pipeline-run",
-        output.run.status === "blocked" ? "warning" : "success",
-        `${output.run.runId} 诊断管线已运行`,
-        `${output.analysis.episodes.length} 集 / ${output.analysis.episodes.reduce((sum, episode) => sum + episode.assets.length, 0)} 资产，用时 ${Math.round(performance.now() - startedAt)}ms。`,
-      );
-      setDevLogs((current) => [...output.run.logs, ...current].slice(0, 120));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "未知错误";
-      appendLog("pipeline-run", "error", "生成失败", message);
-      showToast("生成失败，查看底部日志");
-    } finally {
-      setIsGenerating(false);
-    }
-  }
-
-  async function handleExportBundle(episode: EpisodeResult) {
-    const zip = new JSZip();
-    writeEpisodeToZip(zip, episode);
-    await downloadZip(`${episode.episodeId}_storyboard_bundle.zip`, zip);
-    showToast(`${episode.episodeId} 已导出 ZIP`);
-    appendLog("export", "success", `${episode.episodeId} 已导出`, "包含 script.md、assets.json、shots.json、prompts.json、grouped csv。");
-  }
-
-  async function handleExportAll() {
-    const zip = new JSZip();
-    writeProjectToZip(zip, analysis);
-    await downloadZip("storyboard_project_bundle.zip", zip);
-    showToast("项目 ZIP 已导出");
-    appendLog("export", "success", "项目 ZIP 已导出", `${analysis.episodes.length} 集已写入导出包。`);
-  }
-
   async function handleFileUpload(file: File | undefined) {
     if (!file) return;
     const text = await file.text();
@@ -869,7 +731,6 @@ function App() {
         script: nextScript,
         options,
         analysis: nextAnalysis,
-        latestRun,
       }),
     );
     setHasDraftChanges(!shouldPersist);
@@ -881,7 +742,6 @@ function App() {
         script: nextScript,
         options,
         analysis: nextAnalysis,
-        latestRun,
       });
       void saveBackendProject({ ...savedProject, rootName: projectRoot.rootName }).then(
         () => appendLog("project-files", "success", "分集剧本已写入后端项目文件夹", `${projectRoot.rootName}/${savedProject.folderName || toSafeFolderName(savedProject.name)}/input/episodes`),
@@ -927,7 +787,6 @@ function App() {
         script,
         options: nextOptions,
         analysis,
-        latestRun,
       }),
     );
     setHasDraftChanges(true);
@@ -965,28 +824,6 @@ function App() {
     const nextScript = formatEpisodeSplitPreview(episodeSplitDraft.preview);
     applyScriptToProject(nextScript, true, "合集分集已确认并保存");
     setEpisodeSplitDraft(null);
-  }
-
-  function updateSelectedEpisode(nextEpisode: EpisodeResult) {
-    setAnalysis((current) => ({
-      ...current,
-      episodes: current.episodes.map((episode) => (episode.episodeId === nextEpisode.episodeId ? nextEpisode : episode)),
-    }));
-    updateActiveProject((project) =>
-      updateProjectSnapshot(project, {
-        projectId: project.projectId,
-        name: project.name,
-        script,
-        options,
-        analysis: {
-          ...analysis,
-          episodes: analysis.episodes.map((episode) => (episode.episodeId === nextEpisode.episodeId ? nextEpisode : episode)),
-        },
-        latestRun,
-      }),
-    );
-    showToast(`${nextEpisode.episodeId} 真源已更新`);
-    appendLog("true-source", "warning", `${nextEpisode.episodeId} 真源被人工修改`, "后续应记录 diff、版本号和锁定状态。");
   }
 
   function appendLog(source: string, level: DevLogLevel, message: string, detail?: string) {
@@ -1309,11 +1146,7 @@ function App() {
           )}
           {activePage === "pipeline" && (
             <PipelineConfigView
-              latestRun={latestRun}
               llmConfig={llmConfig}
-              artifacts={activeProject.artifacts}
-              locks={activeProject.locks}
-              tasks={activeProject.tasks}
               backendHealth={backendHealth}
               backendRulepacks={backendRulepacks}
               backendPromptLibrary={backendPromptLibrary}
@@ -1517,26 +1350,19 @@ function RunningTaskStrip({ tasks }: { tasks: RunningTopTask[] }) {
 }
 
 function buildRunningTopTasks({
-  isGenerating,
   runningAssetExtractKinds,
-  runningImageAssetId,
   runningStoryNodeId,
   runningStoryBatchLabel,
   imageTasks,
   llmLogs,
 }: {
-  isGenerating: boolean;
   runningAssetExtractKinds: AssetKind[];
-  runningImageAssetId: string;
   runningStoryNodeId: StoryWorkflowNodeId | "";
   runningStoryBatchLabel: string;
   imageTasks: BackendImageTask[];
   llmLogs: BackendLlmLog[];
 }): RunningTopTask[] {
   const tasks: RunningTopTask[] = [];
-  if (isGenerating) {
-    tasks.push({ id: "pipeline-generation", name: "LLM 管线生成中", category: "llm" });
-  }
   for (const kind of runningAssetExtractKinds) {
     tasks.push({
       id: `asset-extract-${kind}`,
@@ -1558,9 +1384,6 @@ function buildRunningTopTasks({
         category: "llm",
       });
     }
-  }
-  if (runningImageAssetId) {
-    tasks.push({ id: `local-image-${runningImageAssetId}`, name: `生图 ${runningImageAssetId}`, category: "image" });
   }
   for (const task of imageTasks) {
     if (task.status !== "running") continue;
@@ -1859,7 +1682,7 @@ function ProjectListItem({
         <div className="project-card-metrics">
           <span>{episodeCount} 集</span>
           <span>{assetCount} 资产</span>
-          <span>{shotCount} 旧诊断镜头</span>
+          <span>{shotCount} 自动解析镜头</span>
         </div>
         <div className="project-card-foot">
           <small>{updatedAt}</small>
@@ -1876,7 +1699,7 @@ function ProjectListItem({
       <button onClick={() => onSelectProject(project.projectId)}>
         <strong>{project.name}</strong>
         <span>{folderName}</span>
-        <span>{episodeCount} 集 / {assetCount} 资产 / {shotCount} 旧诊断镜头</span>
+        <span>{episodeCount} 集 / {assetCount} 资产 / {shotCount} 自动解析镜头</span>
         <small>{updatedAt}</small>
       </button>
       <button className="icon-danger-button" onClick={() => onRequestDeleteProject(project)} title="删除项目">
@@ -5035,157 +4858,8 @@ function ReviewStat({ label, value, tone }: { label: string; value: number; tone
   );
 }
 
-function ContextPackView({ contextPack }: { contextPack: ContextPack }) {
-  return (
-    <section className="page-stack">
-      <div className="page-header work-header">
-        <div>
-          <h2>辅助信息审阅</h2>
-          <p>只保留后续分镜和提示词看不到、但必须遵守的信息；每条都要能说明来源和用途。</p>
-        </div>
-        <div className="header-actions">
-          <button disabled>
-            <RefreshCcw size={16} />
-            重算本集
-          </button>
-          <button disabled>
-            <Lock size={16} />
-            锁定确认
-          </button>
-        </div>
-      </div>
-
-      <section className="support-review-grid">
-        <article className="panel">
-          <div className="panel-title">
-            <Database size={18} />
-            <span>集级辅助 03</span>
-          </div>
-          <div className="support-list">
-            {contextPack.episodes.map((episode) => (
-              <div key={episode.episodeId} className="support-item">
-                <header>
-                  <strong>{episode.episodeId}</strong>
-                  <span>供 06/07 使用</span>
-                </header>
-                <p>{episode.objective}</p>
-                <small>用途：控制揭露顺序、情绪弧线、跨场关系，不写具体镜头站位。</small>
-                <small>来源：本集全量剧本 + 题材/风格规则；可靠性：需人工确认。</small>
-                <div className="tag-row">
-                  {episode.emotionalCurve.map((item) => (
-                    <span key={item}>{item}</span>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        </article>
-
-        <article className="panel">
-          <div className="panel-title">
-            <Scissors size={18} />
-            <span>场级连续性 04</span>
-          </div>
-          <div className="support-list">
-            {contextPack.sceneBeats.map((beat) => (
-              <div key={beat.beatId} className="support-item">
-                <header>
-                  <strong>{beat.scene}</strong>
-                  <span>{beat.episodeId}</span>
-                </header>
-                <p>{beat.purpose}</p>
-                <small>用途：给场级分镜统筹和局部重跑提供场内边界。</small>
-                <small>来源：本场剧本文字；仍需确认人物进出和道具流转。</small>
-              </div>
-            ))}
-          </div>
-        </article>
-      </section>
-
-      <section className="support-review-grid three">
-        <ContextStatePanel title="角色锁定项" items={contextPack.characters} renderItem={(item) => (
-          <>
-            <header>
-              <strong>{item.name}</strong>
-              <span>{item.episodeId}</span>
-            </header>
-            <p>{item.baseline}</p>
-            <small>需要锁定：外观、服装、手持物、情绪底色。</small>
-            <small>当前：{item.currentEmotion}；手持物：{item.heldItems.join("、") || "无/待确认"}</small>
-          </>
-        )} />
-        <ContextStatePanel title="场景锁定项" items={contextPack.scenes} renderItem={(item) => (
-          <>
-            <header>
-              <strong>{item.name}</strong>
-              <span>{item.time}</span>
-            </header>
-            <p>{item.lighting}</p>
-            <small>需要锁定：门窗、光源、桌椅、可复用角度、背景人物密度。</small>
-            <small>{item.background}</small>
-          </>
-        )} />
-        <ContextStatePanel title="道具锁定项" items={contextPack.props} renderItem={(item) => (
-          <>
-            <header>
-              <strong>{item.name}</strong>
-              <span>{item.episodeId}</span>
-            </header>
-            <p>{item.state}</p>
-            <small>需要锁定：开合、破损、持有人、是否可被镜头看见。</small>
-            <small>持有人：{item.owner}；{item.visibility}</small>
-          </>
-        )} />
-      </section>
-
-      <section className="panel">
-        <div className="panel-title">
-          <ClipboardList size={18} />
-          <span>镜头级连续性监看</span>
-        </div>
-        <div className="continuity-table">
-          {contextPack.continuity.slice(0, 12).map((state) => (
-            <article key={state.shotId} className="continuity-row">
-              <strong>{state.shotId}</strong>
-              <p>{state.current}</p>
-              <small>前：{state.previous}</small>
-              <small>后：{state.next}</small>
-            </article>
-          ))}
-        </div>
-      </section>
-    </section>
-  );
-}
-
-function ContextStatePanel<T>({
-  title,
-  items,
-  renderItem,
-}: {
-  title: string;
-  items: T[];
-  renderItem: (item: T) => ReactNode;
-}) {
-  return (
-    <article className="panel">
-      <div className="panel-title">
-        <ClipboardList size={18} />
-        <span>{title}</span>
-      </div>
-      <div className="context-card-list">
-        {items.length ? items.map((item, index) => <div className="context-card" key={index}>{renderItem(item)}</div>) : <div className="empty-state">待生成。</div>}
-      </div>
-    </article>
-  );
-}
-
 function PipelineConfigView({
-  latestRun,
   llmConfig,
-  artifacts,
-  locks,
-  tasks,
   backendHealth,
   backendRulepacks,
   backendPromptLibrary,
@@ -5210,11 +4884,7 @@ function PipelineConfigView({
   onDeletePromptVersion,
   onActivatePromptVersion,
 }: {
-  latestRun: PipelineRun | null;
   llmConfig: LlmExecutorConfig;
-  artifacts: ArtifactRecord[];
-  locks: LockRecord[];
-  tasks: TaskRecord[];
   backendHealth: BackendHealth | null;
   backendRulepacks: BackendRulepack[];
   backendPromptLibrary: BackendPromptLibrary;
@@ -5239,7 +4909,6 @@ function PipelineConfigView({
   onDeletePromptVersion: (versionId: string) => void;
   onActivatePromptVersion: (promptId: string, versionId: string) => void;
 }) {
-  const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState(false);
   const [activeConfigTab, setActiveConfigTab] = useState<"basic" | "llm" | "image" | "rules" | "prompts">("basic");
 
   return (
@@ -5283,7 +4952,7 @@ function PipelineConfigView({
       {activeConfigTab === "llm" && (
         <section className="settings-layout" role="tabpanel">
           <LlmConfigForm config={llmConfig} backendHasApiKey={backendLlmHasApiKey} onChange={onLlmConfigChange} />
-          <RunHealthPanel latestRun={latestRun} config={llmConfig} backendHealth={backendHealth} onRefresh={onRefreshBackendStatus} />
+          <RunHealthPanel config={llmConfig} backendHealth={backendHealth} onRefresh={onRefreshBackendStatus} />
         </section>
       )}
 
@@ -5323,13 +4992,6 @@ function PipelineConfigView({
         />
       )}
 
-      <details className="diagnostics-panel" open={isDiagnosticsOpen} onToggle={(event) => setIsDiagnosticsOpen(event.currentTarget.open)}>
-        <summary>
-          <span>开发诊断</span>
-          <small>{isDiagnosticsOpen ? "收起管线细节" : "查看管线、Artifact、任务状态"}</small>
-        </summary>
-        <PipelineDiagnostics latestRun={latestRun} artifacts={artifacts} locks={locks} tasks={tasks} />
-      </details>
     </section>
   );
 }
@@ -5566,100 +5228,6 @@ function formatPromptVersionLabel(version: BackendPromptVersion) {
   return `${sourceLabel} - ${name}`;
 }
 
-function PipelineDiagnostics({
-  latestRun,
-  artifacts,
-  locks,
-  tasks,
-}: {
-  latestRun: PipelineRun | null;
-  artifacts: ArtifactRecord[];
-  locks: LockRecord[];
-  tasks: TaskRecord[];
-}) {
-  const issueTasks = tasks.filter((task) => task.status === "blocked" || task.status === "needs_review");
-  const latestTraces = latestRun?.stageResults.flatMap((stage) => stage.traces ?? []) ?? [];
-  const blockedStages = latestRun?.stageResults.filter((stage) => stage.status === "blocked") ?? [];
-  return (
-    <div className="diagnostics-content">
-      <section className="pipeline-layout compact-diagnostics">
-        <article className="panel">
-          <div className="panel-title">
-            <Lock size={18} />
-            <span>排查摘要</span>
-            <strong>{latestRun?.status ?? "未运行"}</strong>
-          </div>
-          <div className="lock-task-grid">
-            <ReviewStat label="Artifact" value={artifacts.length} tone="muted" />
-            <ReviewStat label="已锁定" value={locks.filter((lockItem) => lockItem.status === "locked").length} tone="muted" />
-            <ReviewStat label="阻塞阶段" value={blockedStages.length} tone="warning" />
-            <ReviewStat label="阻塞任务" value={tasks.filter((task) => task.status === "blocked").length} tone="warning" />
-            <ReviewStat label="需确认" value={tasks.filter((task) => task.status === "needs_review").length} tone="warning" />
-            <ReviewStat label="LLM 调用" value={latestTraces.length} tone="muted" />
-          </div>
-        </article>
-        <article className="panel">
-          <div className="panel-title">
-            <ClipboardList size={18} />
-            <span>需要处理的任务</span>
-            <strong>{issueTasks.length}</strong>
-          </div>
-          <div className="task-list">
-            {issueTasks.map((task) => (
-              <div key={task.taskId} className={`task-row ${task.status}`}>
-                <strong>{task.label}</strong>
-                <span>{task.status}</span>
-                <small>{task.detail}</small>
-              </div>
-            ))}
-            {!issueTasks.length && <div className="empty-state">暂无阻塞或待确认任务。</div>}
-          </div>
-        </article>
-      </section>
-
-      <section className="panel">
-        <div className="panel-title">
-          <Terminal size={18} />
-          <span>LLM 调用追踪</span>
-          <strong>{latestTraces.length}</strong>
-        </div>
-        <div className="llm-trace-list">
-          {latestTraces.map((trace) => (
-            <details key={trace.traceId} className="llm-trace-item">
-              <summary>
-                <strong>{trace.label}</strong>
-                <span>{trace.promptName}</span>
-                <span>{trace.durationMs}ms</span>
-                {trace.validationErrors.length ? <span className="trace-error">Schema 失败</span> : <span>Schema 通过</span>}
-              </summary>
-              <div className="trace-grid">
-                <label>
-                  System Prompt
-                  <textarea value={trace.systemPrompt} readOnly spellCheck={false} />
-                </label>
-                <label>
-                  User Prompt
-                  <textarea value={trace.userPrompt} readOnly spellCheck={false} />
-                </label>
-                <label>
-                  输出契约
-                  <textarea value={trace.outputContract} readOnly spellCheck={false} />
-                </label>
-                <label>
-                  模型返回
-                  <textarea value={trace.rawResponse} readOnly spellCheck={false} />
-                </label>
-              </div>
-              {trace.validationErrors.length > 0 && <p>错误：{trace.validationErrors.join("；")}</p>}
-            </details>
-          ))}
-          {!latestTraces.length && <div className="empty-state">生成后显示每次 LLM 的输入、输出和校验结果。</div>}
-        </div>
-      </section>
-    </div>
-  );
-}
-
 type TaskRecordItem = {
   id: string;
   logIds?: string[];
@@ -5837,7 +5405,7 @@ function buildTaskRecords(llmLogs: BackendLlmLog[], imageLogs: BackendImageLog[]
 function buildImageTaskRecords(imageLogs: BackendImageLog[], imageTasks: BackendImageTask[]): TaskRecordItem[] {
   const groups = new Map<string, BackendImageLog[]>();
   for (const log of imageLogs) {
-    const key = log.taskId || inferLegacyImageTaskKey(log);
+    const key = log.taskId || inferImageTaskKey(log);
     groups.set(key, [log, ...(groups.get(key) ?? [])]);
   }
   if (imageTasks.length) {
@@ -5878,10 +5446,10 @@ function buildImageTaskRecords(imageLogs: BackendImageLog[], imageTasks: Backend
   });
 }
 
-function inferLegacyImageTaskKey(log: BackendImageLog) {
+function inferImageTaskKey(log: BackendImageLog) {
   const date = new Date(log.time);
   const bucket = Number.isNaN(date.getTime()) ? log.time : Math.floor(date.getTime() / 120000).toString();
-  return `legacy-${log.provider || "image"}-${log.model || "model"}-${bucket}`;
+  return `image-${log.provider || "provider"}-${log.model || "model"}-${bucket}`;
 }
 
 function formatTaskTime(value: string) {
@@ -6095,8 +5663,6 @@ const backendPromptStageCopy: Record<string, { title: string; description: strin
   asset_extract_characters: { title: "角色资产识别", description: "从剧本文本提取角色资产候选。" },
   asset_extract_scenes: { title: "场景资产识别", description: "从剧本文本提取空间、场景资产候选。" },
   asset_extract_props: { title: "道具资产识别", description: "从剧本文本提取关键道具资产候选。" },
-  storyboard_plan: { title: "旧诊断分镜", description: "旧本地诊断管线模板，生产流程使用分块规划。" },
-  prompt_generate: { title: "旧诊断提示词", description: "旧本地诊断管线模板，生产流程使用视频提示词。" },
   story_workflow_story_map: { title: "剧情地图", description: "提取剧情大纲、章节地图和关键转折。" },
   story_workflow_character_summary: { title: "角色概要", description: "提取角色功能、身份视觉阶段、关系变化和认知状态。" },
   story_workflow_continuity: { title: "信息连续性", description: "提取伏笔、母题和跨集状态风险。" },
@@ -6118,12 +5684,10 @@ function getBackendPromptDescription(stage: string) {
 }
 
 function RunHealthPanel({
-  latestRun,
   config,
   backendHealth,
   onRefresh,
 }: {
-  latestRun: PipelineRun | null;
   config: LlmExecutorConfig;
   backendHealth: BackendHealth | null;
   onRefresh: () => void;
@@ -6151,17 +5715,6 @@ function RunHealthPanel({
           <div>
             <strong>{config.hasApiKey ? "真实接口已配置" : "缺少 API Key"}</strong>
             <span>{config.baseUrl} / {config.model}</span>
-          </div>
-        </div>
-        <div className={latestRun ? "health-item done" : "health-item warning"}>
-          {latestRun ? <CheckCircle2 size={18} /> : <AlertTriangle size={18} />}
-          <div>
-            <strong>{latestRun ? `最近运行：${latestRun.status}` : "还没有运行记录"}</strong>
-            <span>
-              {latestRun
-                ? `${latestRun.stageResults.filter((stage) => stage.status === "done").length} 完成`
-                : "生产工作流请使用剧本统筹、分镜统筹和视频生成页。"}
-            </span>
           </div>
         </div>
       </div>
@@ -6536,280 +6089,6 @@ function LlmConfigForm({
   );
 }
 
-function StoryboardWorkbench({
-  analysis,
-  contextPack,
-  selectedEpisode,
-  selectedEpisodeId,
-  setSelectedEpisodeId,
-  viewMode,
-  setViewMode,
-  hasDraftChanges,
-  onExportEpisode,
-  onEpisodeChange,
-  locks,
-  onLock,
-  onRerun,
-}: {
-  analysis: ScriptAnalysis;
-  contextPack: ContextPack;
-  selectedEpisode: EpisodeResult;
-  selectedEpisodeId: string;
-  setSelectedEpisodeId: (id: string) => void;
-  viewMode: "cards" | "json";
-  setViewMode: (mode: "cards" | "json") => void;
-  hasDraftChanges: boolean;
-  onExportEpisode: () => void;
-  onEpisodeChange: (episode: EpisodeResult) => void;
-  locks: LockRecord[];
-  onLock: (targetId: string, status: "locked" | "unlocked" | "needs_review", reason: string) => void;
-  onRerun: (scope: string, targetId: string) => void;
-}) {
-  const selectedContinuity = contextPack.episodes.find((episode) => episode.episodeId === selectedEpisodeId);
-  const selectedSceneBeats = contextPack.sceneBeats.filter((beat) => beat.episodeId === selectedEpisodeId);
-  const reviewCount = selectedEpisode.shots.filter((shot) => shot.reviewNotes.length > 0).length;
-
-  return (
-    <>
-      <div className="page-header work-header">
-        <div>
-          <h2>分镜工作台</h2>
-          <p>先看场级规划和连续性，再审镜头与视频提示词；局部不满意时按块重跑。</p>
-        </div>
-        <div className="mode-switch" aria-label="视图模式">
-          <button className={viewMode === "cards" ? "active" : ""} onClick={() => setViewMode("cards")}>
-            <ClipboardList size={16} />
-            审阅
-          </button>
-          <button className={viewMode === "json" ? "active" : ""} onClick={() => setViewMode("json")}>
-            <Edit3 size={16} />
-            JSON
-          </button>
-        </div>
-      </div>
-
-      {analysis.warnings.length > 0 && (
-        <div className="warning-strip">
-          <AlertTriangle size={17} />
-          <div>
-            {analysis.warnings.map((warning) => (
-              <span key={warning}>{warning}</span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <div className="work-status-grid">
-        <ReviewStat label="本集资产" value={selectedEpisode.assets.length} tone="normal" />
-        <ReviewStat label="本集镜头" value={selectedEpisode.shots.length} tone="normal" />
-        <ReviewStat label="需复核镜头" value={reviewCount} tone={reviewCount ? "warning" : "muted"} />
-        <ReviewStat label="已锁定块" value={0} tone="muted" />
-      </div>
-
-      <section className="storyboard-control-grid">
-        <article className="panel">
-          <div className="panel-title">
-            <Database size={18} />
-            <span>本集必须遵守</span>
-          </div>
-          <div className="operator-note-list">
-            <p>{selectedContinuity?.objective ?? "待生成本集辅助信息。"}</p>
-            <p>情绪弧线：{selectedContinuity?.emotionalCurve.join(" -> ") || "待确认"}</p>
-          </div>
-        </article>
-        <article className="panel">
-          <div className="panel-title">
-            <Scissors size={18} />
-            <span>场级规划</span>
-          </div>
-          <div className="scene-plan-list">
-            {selectedSceneBeats.map((beat) => (
-              <div key={beat.beatId} className="scene-plan-item">
-                <strong>{beat.scene}</strong>
-                <p>{beat.purpose}</p>
-                <small>{beat.emotionProgression}</small>
-              </div>
-            ))}
-          </div>
-        </article>
-        <article className="panel">
-          <div className="panel-title">
-            <RefreshCcw size={18} />
-            <span>重跑控制</span>
-          </div>
-          <div className="rerun-actions">
-            <button onClick={() => onRerun("scene", selectedEpisodeId)}>重跑本场</button>
-            <button onClick={() => onRerun("block", selectedEpisodeId)}>重跑选中块</button>
-            <button onClick={() => onRerun("prompt", selectedEpisodeId)}>只重写提示词</button>
-          </div>
-          <p className="side-note">空间、进出场、道具流转变更要场级重跑；只是不满意某块表达时才块级重跑。</p>
-        </article>
-      </section>
-
-      <EpisodeView
-        episode={selectedEpisode}
-        onExport={onExportEpisode}
-        isExportDisabled={hasDraftChanges}
-        viewMode={viewMode}
-        onEpisodeChange={onEpisodeChange}
-        locks={locks}
-        onLock={onLock}
-        onRerun={onRerun}
-      />
-    </>
-  );
-}
-
-function EpisodeView({
-  episode,
-  onExport,
-  isExportDisabled,
-  viewMode,
-  onEpisodeChange,
-  locks,
-  onLock,
-  onRerun,
-}: {
-  episode: EpisodeResult;
-  onExport: () => void;
-  isExportDisabled: boolean;
-  viewMode: "cards" | "json";
-  onEpisodeChange: (episode: EpisodeResult) => void;
-  locks: LockRecord[];
-  onLock: (targetId: string, status: "locked" | "unlocked" | "needs_review", reason: string) => void;
-  onRerun: (scope: string, targetId: string) => void;
-}) {
-  const [jsonDraft, setJsonDraft] = useState(() => formatJson(exportEpisodeBundle(episode)));
-  const [jsonError, setJsonError] = useState("");
-
-  useEffect(() => {
-    setJsonDraft(formatJson(exportEpisodeBundle(episode)));
-    setJsonError("");
-  }, [episode]);
-
-  function applyJsonDraft() {
-    const parsed = parseEpisodeBundle(jsonDraft, episode);
-    if (!parsed.ok) {
-      setJsonError(parsed.error);
-      return;
-    }
-    setJsonError("");
-    onEpisodeChange(parsed.episode);
-  }
-
-  return (
-    <div className="episode-view">
-      <div className="episode-header">
-        <div>
-          <h2>{episode.title}</h2>
-          <p>{episode.logline}</p>
-        </div>
-        <button onClick={onExport} disabled={isExportDisabled}>
-          <Download size={18} />
-          导出本集
-        </button>
-      </div>
-
-      {viewMode === "json" ? (
-        <section className="panel json-editor-panel">
-          <div className="panel-title">
-            <Edit3 size={18} />
-            <span>真源 JSON 编辑</span>
-            <button onClick={applyJsonDraft}>应用修改</button>
-          </div>
-          <textarea className="json-editor" value={jsonDraft} onChange={(event) => setJsonDraft(event.target.value)} spellCheck={false} />
-          {jsonError && <div className="json-error">{jsonError}</div>}
-        </section>
-      ) : (
-        <>
-          <section className="storyboard-main-grid">
-            <div className="panel">
-              <div className="panel-title">
-                <Sparkles size={18} />
-                <span>本集资产约束</span>
-              </div>
-              <div className="asset-list">
-                {episode.assets.map((asset) => (
-                  <article key={asset.assetId} className="asset-item">
-                    <div>
-                      <strong>{asset.name}</strong>
-                      <span>{asset.type}</span>
-                    </div>
-                    <p>{asset.description}</p>
-                    <small>{asset.continuity}</small>
-                  </article>
-                ))}
-              </div>
-            </div>
-
-            <div className="panel">
-              <div className="panel-title">
-                <Scissors size={18} />
-                <span>镜头审阅</span>
-              </div>
-              <div className="shot-list">
-                {episode.shots.map((shot) => {
-                  const isLocked = locks.find((lockItem) => lockItem.targetId === shot.shotId)?.status === "locked";
-                  return (
-                    <article key={shot.shotId} className="shot-item">
-                      <header>
-                        <strong>{shot.shotId}</strong>
-                        <span>{shot.durationSeconds}s</span>
-                      </header>
-                      <h3>{shot.scene}</h3>
-                      <div className="shot-meta">
-                        <span>{shot.shotType}</span>
-                        <span>{shot.framing}</span>
-                        <span>{shot.camera}</span>
-                        <span>{shot.assets.length ? `${shot.assets.length} 资产` : "资产待关联"}</span>
-                        <span>{isLocked ? "已锁定" : "未锁定"}</span>
-                      </div>
-                      <p>{shot.action}</p>
-                      {shot.dialogue && <blockquote>{shot.dialogue}</blockquote>}
-                      {shot.reviewNotes.length > 0 && (
-                        <ul className="review-notes">
-                          {shot.reviewNotes.map((note) => (
-                            <li key={note}>{note}</li>
-                          ))}
-                        </ul>
-                      )}
-                      <div className="shot-actions">
-                        <button onClick={() => onLock(shot.shotId, isLocked ? "unlocked" : "locked", isLocked ? "人工取消镜头锁定。" : "人工确认镜头可作为下游输入。")}>
-                          <Lock size={15} />
-                          {isLocked ? "解锁镜头" : "锁定镜头"}
-                        </button>
-                        <button onClick={() => onRerun("block", shot.shotId)}>
-                          <RefreshCcw size={15} />
-                          重跑本块
-                        </button>
-                      </div>
-                    </article>
-                  );
-                })}
-              </div>
-            </div>
-          </section>
-
-          <div className="panel prompts-panel">
-            <div className="panel-title">
-              <Film size={18} />
-              <span>视频提示词预览</span>
-            </div>
-            <div className="prompt-list">
-              {episode.prompts.map((prompt) => (
-                <article key={prompt.promptId}>
-                  <strong>{prompt.promptId}</strong>
-                  <p>{prompt.videoPrompt}</p>
-                </article>
-              ))}
-            </div>
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
 function Metric({ icon, label, value }: { icon: ReactNode; label: string; value: number }) {
   return (
     <div className="metric">
@@ -6951,16 +6230,6 @@ function normalizeEpisodeForStorage(episode: EpisodeSplitItem) {
   const canonicalTitle = `第${episode.episodeNumber}集`;
   const titleSuffix = firstLine && firstLine !== "未识别分集标记" ? ` ${firstLine}` : "";
   return [canonicalTitle + titleSuffix, ...lines.slice(1)].join("\n").trim();
-}
-
-async function downloadZip(filename: string, zip: JSZip) {
-  const blob = await zip.generateAsync({ type: "blob" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  link.click();
-  URL.revokeObjectURL(url);
 }
 
 function useLocalState(key: string, defaultValue: string) {

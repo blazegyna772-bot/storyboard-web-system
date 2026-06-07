@@ -1,5 +1,5 @@
 import { backendRequest } from "./backendApi";
-import type { ImageGenerationConfig, LlmExecutorConfig } from "../pipeline/types";
+import type { ImageGenerationConfig, LlmExecutorConfig } from "./providerConfig";
 
 export interface BackendHealth {
   status: string;
