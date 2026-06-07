@@ -221,9 +221,9 @@ function App() {
   const [imageConfig, setImageConfig] = useState<ImageGenerationConfig>(() => loadImageGenerationConfig());
   const [runningImageAssetId, setRunningImageAssetId] = useState("");
   const [devLogs, setDevLogs] = useState<DevLogEntry[]>(() => [
-    createDevLog("pipeline", "info", "开发日志台已启动", "当前记录前端规则阶段和操作；接入 LLM 后记录 stage、prompt、耗时、错误和产物引用。"),
+    createDevLog("pipeline", "info", "开发日志台已启动", "当前记录后端 LLM、资产生成和工作流节点运行状态。"),
     createDevLog("stage:01", "success", "剧本校验规则可用", "scriptQualityReport 已在前端实时计算。"),
-    createDevLog("stage:02", "success", "规则版分集/资产/镜头生成可用", "当前尚不是真实 LLM PipelineRun。"),
+    createDevLog("stage:02", "info", "旧诊断管线可用", "生产流程以剧本统筹、资产审阅、分镜统筹和视频生成为准。"),
   ]);
   const scriptQuality = useMemo(() => buildScriptQualityReport(script), [script]);
   const contextPack = useMemo(() => buildContextPack(analysis), [analysis]);
@@ -744,7 +744,7 @@ function App() {
   }
 
   function handleRerun(scope: string, targetId: string) {
-    appendLog("rerun", "warning", `请求重跑 ${scope}`, `${targetId} 当前由本地 PipelineRun 记录请求，真实局部 executor 待接入。`);
+    appendLog("rerun", "warning", `请求重跑 ${scope}`, `${targetId} 当前属于旧诊断管线记录；生产工作流请在剧本统筹、分镜统筹或视频生成页重跑对应节点。`);
     void handleGenerate();
   }
 
@@ -776,8 +776,8 @@ function App() {
       appendLog(
         "pipeline-run",
         output.run.status === "blocked" ? "warning" : "success",
-        `${output.run.runId} 已生成`,
-        `${output.analysis.episodes.length} 集 / ${output.analysis.episodes.reduce((sum, episode) => sum + episode.assets.length, 0)} 资产 / ${output.analysis.episodes.reduce((sum, episode) => sum + episode.shots.length, 0)} 镜头，用时 ${Math.round(performance.now() - startedAt)}ms；${output.run.stageResults.filter((stage) => stage.status === "blocked").length} 阶段待接执行器。`,
+        `${output.run.runId} 诊断管线已运行`,
+        `${output.analysis.episodes.length} 集 / ${output.analysis.episodes.reduce((sum, episode) => sum + episode.assets.length, 0)} 资产，用时 ${Math.round(performance.now() - startedAt)}ms。`,
       );
       setDevLogs((current) => [...output.run.logs, ...current].slice(0, 120));
     } catch (error) {
@@ -1451,7 +1451,7 @@ function TopBar({
         <span>{metrics.episodeCount} 集</span>
         <span>{metrics.sceneCount} 场次</span>
         <span>{metrics.assetCount} 资产</span>
-        <span>{metrics.shotCount} 镜头</span>
+        <span>{metrics.videoBlockCount} 视频块</span>
       </div>
       <RunningTaskStrip tasks={runningTasks} />
       <StatusBar hasDraftChanges={hasDraftChanges} lastGeneratedAt={lastGeneratedAt} />
@@ -1480,7 +1480,7 @@ type TopMetrics = {
   episodeCount: number;
   sceneCount: number;
   assetCount: number;
-  shotCount: number;
+  videoBlockCount: number;
 };
 
 function buildTopMetrics(analysis: ScriptAnalysis, bundle: AssetReviewBundle, workflow: StoryWorkflowState | null): TopMetrics {
@@ -1498,7 +1498,7 @@ function buildTopMetrics(analysis: ScriptAnalysis, bundle: AssetReviewBundle, wo
       normalizedBundle.trueSources.characters.length +
       normalizedBundle.trueSources.scenes.length +
       normalizedBundle.trueSources.props.length,
-    shotCount: asArray(storyboardOutput?.shots).length,
+    videoBlockCount: asArray(storyboardOutput?.video_blocks).length,
   };
 }
 
@@ -1859,7 +1859,7 @@ function ProjectListItem({
         <div className="project-card-metrics">
           <span>{episodeCount} 集</span>
           <span>{assetCount} 资产</span>
-          <span>{shotCount} 镜头</span>
+          <span>{shotCount} 旧诊断镜头</span>
         </div>
         <div className="project-card-foot">
           <small>{updatedAt}</small>
@@ -1876,7 +1876,7 @@ function ProjectListItem({
       <button onClick={() => onSelectProject(project.projectId)}>
         <strong>{project.name}</strong>
         <span>{folderName}</span>
-        <span>{episodeCount} 集 / {assetCount} 资产 / {shotCount} 镜头</span>
+        <span>{episodeCount} 集 / {assetCount} 资产 / {shotCount} 旧诊断镜头</span>
         <small>{updatedAt}</small>
       </button>
       <button className="icon-danger-button" onClick={() => onRequestDeleteProject(project)} title="删除项目">
@@ -2947,7 +2947,7 @@ function VideoGenerationView({
               <button key={`${groupId}-${index}`} className={isActive ? "active" : ""} onClick={() => setSelectedGroupId(groupId)}>
                 <strong>{groupId}</strong>
                 <span>{textValue(group.duration_seconds)}秒</span>
-                <small>{textValue(group.source_text) || asTextArray(group.shot_nos).join(" / ")}</small>
+                <small>{textValue(group.source_text)}</small>
                 <em className={`story-node-status ${textValue(group.status, "draft") === "done" ? "done" : "idle"}`}>{videoGroupStatusText(group.status)}</em>
               </button>
             );
@@ -3614,84 +3614,36 @@ function ReviewSceneSummary({ data }: { data: Record<string, unknown> }) {
 
 function ReviewStoryboardDesign({ data }: { data: Record<string, unknown> }) {
   const blocks = asArray(data.video_blocks).map(asRecord);
-  if (blocks.length) {
-    const sceneBase = asRecord(data.scene_base);
-    return (
-      <div className="story-artifact-review">
-        <ReviewHero title={`${textValue(data.episode_id)} / ${textValue(data.scene_id)} 分块规划`} subtitle={textValue(sceneBase.scene_name || sceneBase.base_space_state)} />
-        <ReviewSection title={`视频块（${blocks.length} 块）`}>
-          <div className="storyboard-review-table-wrap">
-            <table className="storyboard-review-table">
-              <thead>
-                <tr>
-                  <th>块号</th>
-                  <th>时长</th>
-                  <th>剧本原文</th>
-                  <th>任务</th>
-                  <th>开始状态</th>
-                  <th>结束状态</th>
-                  <th>资产</th>
-                  <th>临时资产</th>
-                </tr>
-              </thead>
-              <tbody>
-                {blocks.map((block, index) => (
-                  <tr key={`${textValue(block.block_id, String(index + 1))}-${index}`}>
-                    <td className="shot-no">{textValue(block.block_id, `VB${String(index + 1).padStart(3, "0")}`)}</td>
-                    <td>{textValue(block.duration_seconds)}秒</td>
-                    <td>{textValue(block.source_text)}</td>
-                    <td>{textValue(block.block_task)}</td>
-                    <td>{textValue(block.start_state)}</td>
-                    <td>{textValue(block.end_state)}</td>
-                    <td><small>{formatAssetRefs(block.asset_refs)}</small></td>
-                    <td><small>{asTextArray(block.temp_assets).join(" / ") || "-"}</small></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </ReviewSection>
-      </div>
-    );
-  }
-  const shots = asArray(data.shots).map(asRecord);
+  const sceneBase = asRecord(data.scene_base);
   return (
     <div className="story-artifact-review">
-      <ReviewHero title={`${textValue(data.episode_id)} / ${textValue(data.scene_id)} 分镜统筹`} subtitle={textValue(data.scene_storyboard_summary)} />
-      <ReviewSection title={`分镜表（${shots.length} 镜）`}>
+      <ReviewHero title={`${textValue(data.episode_id)} / ${textValue(data.scene_id)} 分块规划`} subtitle={textValue(sceneBase.scene_name || sceneBase.base_space_state)} />
+      <ReviewSection title={`视频块（${blocks.length} 块）`}>
         <div className="storyboard-review-table-wrap">
           <table className="storyboard-review-table">
             <thead>
               <tr>
-                <th>镜号</th>
-                <th>类型</th>
+                <th>块号</th>
                 <th>时长</th>
-                <th>景别</th>
-                <th>运镜</th>
-                <th>空间关系</th>
-                <th>画面动作</th>
-                <th>对白/旁白</th>
-                <th>光影</th>
+                <th>剧本原文</th>
+                <th>任务</th>
+                <th>开始状态</th>
+                <th>结束状态</th>
                 <th>资产</th>
-                <th>审阅提醒</th>
+                <th>临时资产</th>
               </tr>
             </thead>
             <tbody>
-              {shots.map((shot, index) => (
-                <tr key={`${textValue(shot.shot_no, String(index + 1))}-${index}`}>
-                  <td className="shot-no">{textValue(shot.shot_no, String(index + 1))}</td>
-                  <td>{textValue(shot.shot_type)}</td>
-                  <td>{textValue(shot.duration_seconds)}秒</td>
-                  <td>{textValue(shot.shot_size)}</td>
-                  <td>{textValue(shot.camera_movement)}</td>
-                  <td>{textValue(shot.space_relation)}</td>
-                  <td>{textValue(shot.screen_action)}</td>
-                  <td>{textValue(shot.dialogue_or_vo)}</td>
-                  <td>{textValue(shot.lighting_tone)}</td>
-                  <td>
-                    <small>{formatAssetRefs(shot.asset_refs)}</small>
-                  </td>
-                  <td><small>{formatReviewNotes(shot.review_notes)}</small></td>
+              {blocks.map((block, index) => (
+                <tr key={`${textValue(block.block_id, String(index + 1))}-${index}`}>
+                  <td className="shot-no">{textValue(block.block_id, `VB${String(index + 1).padStart(3, "0")}`)}</td>
+                  <td>{textValue(block.duration_seconds)}秒</td>
+                  <td>{textValue(block.source_text)}</td>
+                  <td>{textValue(block.block_task)}</td>
+                  <td>{textValue(block.start_state)}</td>
+                  <td>{textValue(block.end_state)}</td>
+                  <td><small>{formatAssetRefs(block.asset_refs)}</small></td>
+                  <td><small>{formatTempAssets(block.temp_assets)}</small></td>
                 </tr>
               ))}
             </tbody>
@@ -3704,55 +3656,22 @@ function ReviewStoryboardDesign({ data }: { data: Record<string, unknown> }) {
 
 function ReviewVideoPrompt({ data }: { data: Record<string, unknown> }) {
   const groups = asArray(data.groups).map(asRecord);
-  if (groups.length) {
-    return (
-      <div className="story-artifact-review">
-        <ReviewSection title={`视频组（${groups.length} 组）`}>
-          <div className="video-prompt-review-list">
-            {groups.map((group, index) => (
-              <article className="video-prompt-row" key={`${textValue(group.group_id, String(index + 1))}-${index}`}>
-                <div className="video-prompt-index">
-                  <strong>{textValue(group.group_id, `VG${String(index + 1).padStart(3, "0")}`)}</strong>
-                  <span>{textValue(group.duration_seconds)}秒</span>
-                  <small>{videoGroupStatusText(group.status)}</small>
-                </div>
-                <div className="video-prompt-body">
-                  <p>{textValue(group.prompt)}</p>
-                  <div className="video-prompt-meta">
-                    <span>镜头：{asTextArray(group.shot_nos).join(" / ") || "-"}</span>
-                    <span>参考图：{asTextArray(group.reference_image_paths).length ? asTextArray(group.reference_image_paths).join(" / ") : "无"}</span>
-                    <span>视频：{textValue(group.video_path, "无")}</span>
-                  </div>
-                </div>
-              </article>
-            ))}
-          </div>
-        </ReviewSection>
-      </div>
-    );
-  }
-  const prompts = asArray(data.video_prompts).map(asRecord);
   return (
     <div className="story-artifact-review">
-      <ReviewSection title={`视频提示词（${prompts.length} 条）`}>
+      <ReviewSection title={`视频提示词（${groups.length} 块）`}>
         <div className="video-prompt-review-list">
-          {prompts.map((prompt, index) => (
-            <article className="video-prompt-row" key={`${textValue(prompt.shot_no, String(index + 1))}-${index}`}>
+          {groups.map((group, index) => (
+            <article className="video-prompt-row" key={`${textValue(group.block_id, String(index + 1))}-${index}`}>
               <div className="video-prompt-index">
-                <strong>{textValue(prompt.shot_no, String(index + 1))}</strong>
-                <span>{textValue(prompt.duration_seconds)}秒</span>
-                <small>{textValue(prompt.aspect_ratio)}</small>
+                <strong>{textValue(group.block_id, `VB${String(index + 1).padStart(3, "0")}`)}</strong>
+                <span>{textValue(group.duration_seconds)}秒</span>
+                <small>{videoGroupStatusText(group.status)}</small>
               </div>
               <div className="video-prompt-body">
-                <p>{textValue(prompt.positive_prompt)}</p>
+                <p>{textValue(group.prompt)}</p>
                 <div className="video-prompt-meta">
-                  <span>运镜：{textValue(prompt.camera_movement, "-")}</span>
-                  <span>连续：{textValue(prompt.action_continuity, "-")}</span>
-                  <span>参考图：{asTextArray(prompt.reference_image_paths).length ? asTextArray(prompt.reference_image_paths).join(" / ") : "无"}</span>
-                </div>
-                <div className="video-prompt-note">
-                  <span>负向：{textValue(prompt.negative_prompt, "-")}</span>
-                  <span>QA：{textValue(prompt.qa_notes, "-")}</span>
+                  <span>参考图：{asTextArray(group.reference_image_paths).length ? asTextArray(group.reference_image_paths).join(" / ") : "无"}</span>
+                  <span>视频：{textValue(group.video_path, "无")}</span>
                 </div>
               </div>
             </article>
@@ -3916,16 +3835,15 @@ function formatAssetRefs(value: unknown): string {
   }).join(" / ");
 }
 
-function formatReviewNotes(value: unknown): string {
-  const notes = asRecord(value);
-  const stateChanges = asTextArray(notes.state_changes);
-  const continuity = asTextArray(notes.continuity_requirements);
-  const risks = asTextArray(notes.review_risks);
-  return [
-    stateChanges.length ? `状态：${stateChanges.join(" / ")}` : "",
-    continuity.length ? `连续：${continuity.join(" / ")}` : "",
-    risks.length ? `风险：${risks.join(" / ")}` : "",
-  ].filter(Boolean).join("；");
+function formatTempAssets(value: unknown): string {
+  const items = asArray(value).map(asRecord).filter((record) => Object.keys(record).length);
+  if (!items.length) return asTextArray(value).join(" / ") || "-";
+  return items.map((item) => {
+    const name = textValue(item.temp_name || item.name, "-");
+    const type = textValue(item.type);
+    const reason = textValue(item.reason);
+    return [name, type, reason].filter(Boolean).join(" · ");
+  }).join(" / ");
 }
 
 function GenericArtifactReview({ data }: { data: Record<string, unknown> }) {
@@ -6177,8 +6095,8 @@ const backendPromptStageCopy: Record<string, { title: string; description: strin
   asset_extract_characters: { title: "角色资产识别", description: "从剧本文本提取角色资产候选。" },
   asset_extract_scenes: { title: "场景资产识别", description: "从剧本文本提取空间、场景资产候选。" },
   asset_extract_props: { title: "道具资产识别", description: "从剧本文本提取关键道具资产候选。" },
-  storyboard_plan: { title: "分镜统筹", description: "按场生成分镜统筹所需规则。" },
-  prompt_generate: { title: "视频提示词生成", description: "把分镜、资产、空间时序转成视频提示词。" },
+  storyboard_plan: { title: "旧诊断分镜", description: "旧本地诊断管线模板，生产流程使用分块规划。" },
+  prompt_generate: { title: "旧诊断提示词", description: "旧本地诊断管线模板，生产流程使用视频提示词。" },
   story_workflow_story_map: { title: "剧情地图", description: "提取剧情大纲、章节地图和关键转折。" },
   story_workflow_character_summary: { title: "角色概要", description: "提取角色功能、身份视觉阶段、关系变化和认知状态。" },
   story_workflow_continuity: { title: "信息连续性", description: "提取伏笔、母题和跨集状态风险。" },
@@ -6241,8 +6159,8 @@ function RunHealthPanel({
             <strong>{latestRun ? `最近运行：${latestRun.status}` : "还没有运行记录"}</strong>
             <span>
               {latestRun
-                ? `${latestRun.stageResults.filter((stage) => stage.status === "done").length} 完成 / ${latestRun.stageResults.filter((stage) => stage.status === "blocked").length} 待接`
-                : "保存配置后可点顶部生成。"}
+                ? `${latestRun.stageResults.filter((stage) => stage.status === "done").length} 完成`
+                : "生产工作流请使用剧本统筹、分镜统筹和视频生成页。"}
             </span>
           </div>
         </div>

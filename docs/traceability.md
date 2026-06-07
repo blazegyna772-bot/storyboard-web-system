@@ -7,7 +7,7 @@
 | R-003 资产真源 | 资产审阅页 | `server/assets/*`, `src/lib/assetApi.ts`, `AssetReviewView` | 部分完成 | 已有 records/true_sources、候选图和真源图；资产抽取后续再优化 |
 | R-004 资产生图工作台 | 资产审阅页生图操作区 | `server/image_providers/*`, `server/assets/service.py`, `AssetCardList` | 部分完成 | 已接本地后端生图、导入、候选、列为真源；视频阶段衔接后续补 |
 | R-005 分镜阶段中间产物 | 分镜工作流节点产物 | `server/story_workflow/*`, `src/lib/storyWorkflowApi.ts` | 部分完成 | 已建立语义化节点、Prompt 文件和 artifact 落点 |
-| R-006 分镜生成 | 分镜统筹页 + 分镜设计 | `StoryboardPlanningView`, `server/story_workflow/service.py`, `rulepacks/default/story_workflow_storyboard_design/prompt.md` | 部分完成 | 已有真实 LLM 调用骨架；待做输出 schema 和人工编辑保存 |
+| R-006 分镜生成 | 分镜统筹页 + 分块规划 | `StoryboardPlanningView`, `server/story_workflow/service.py`, `rulepacks/default/story_workflow_storyboard_design/prompt.md` | 部分完成 | 已有真实 LLM 调用骨架；待做输出 schema 和人工编辑保存 |
 | R-007 风格与规则包 | Rulepack + 流程配置页 | `server/rulepacks/*`, `rulepacks/default/*`, `PipelineConfigView` | 部分完成 | 已能扫描后端 rulepack；待做项目类型工作流配置 |
 | R-008 输出适配 | ZIP 导出 + Output Adapter | `src/pipeline/exportAdapter.ts`, `src/pipeline/defaults.ts` | 原型完成 | 仍需多平台 adapter |
 | R-009 可追踪可溯源 | 文档体系 | `docs/*` | 已启动 | 后续开发必须维护 |
@@ -20,7 +20,7 @@
 | R-016 执行反馈与开发日志 | 底部日志台 | `DevLogPanel`, `src/pipeline/llmExecutor.ts`, `docs/architecture.md` | 部分完成 | 已接 PipelineRun 和真实调用日志；缺完整 request/response 安全脱敏追踪 |
 | R-017 Workflow 执行骨架 | 分镜工作流节点运行记录 | `server/story_workflow/service.py`, `server/api/story_workflow.py`, `src/lib/storyWorkflowApi.ts` | 部分完成 | 已接单节点/批量运行、后端 LLM 调用和节点产物保存；测试项目已实跑分镜工作流 |
 | R-018 Artifact Store | 项目内节点产物存储 | `artifacts/story_workflow/{node}.json`, `artifacts/story_workflow/{node}.meta.json`, `server/story_workflow/models.py` | 部分完成 | 主 JSON 只保存业务 output；状态、rawText、error、输入摘要放 sidecar meta 或日志；待统一到更通用 Artifact Store |
-| R-019 锁定/重跑模型 | 分镜工作流节点重跑边界 | `docs/architecture.md`, `docs/decisions.md` | 设计确认 | 不设置独立块级节点；后续如需小块重跑作为分镜设计内部能力 |
+| R-019 锁定/重跑模型 | 分镜工作流节点重跑边界 | `docs/architecture.md`, `docs/decisions.md` | 设计确认 | 不设置独立块级节点；后续如需小块重跑作为分块规划内部能力 |
 | R-020 任务状态模型 | 待运行/运行中/完成/失败/阻塞/需确认 | `src/pipeline/artifacts.ts`, `PipelineConfigView` | 部分完成 | 已有 TaskRecord；缺异步任务队列 |
 | R-021 模型执行器可替换 | 后端 LLM 代理 + rulepack Prompt | `server/llm/service.py`, `server/settings/*`, `server/rulepacks/*` | 部分完成 | 已接 DeepSeek/OpenAI-compatible；待节点级模型参数配置 |
 | R-022 资产生图 | 图片 providerpack、候选图、真源图 | `providerpacks/`, `server/image_providers/*`, `server/assets/service.py` | 部分完成 | 已接 Geeknow 聚合站配置和候选/真源目录 |
@@ -29,4 +29,4 @@
 
 ## 下一步追踪目标
 
-补 分镜工作流 输出 schema、节点产物人工编辑保存、异步任务状态，以及后续 分镜设计/视频提示词 与资产真源的正式衔接。
+补 分镜工作流 输出 schema、节点产物人工编辑保存、异步任务状态，以及后续 分块规划/视频提示词 与资产真源的正式衔接。

@@ -675,7 +675,6 @@ def build_node_variables(base: Path, script: str, artifacts: dict[str, WorkflowA
         "当前章节概要": current_chapter_summary,
         "当前单集概要": artifact_text(artifacts, "episode_summary"),
         "当前场次概要": scene_summary_text_for_scene(artifacts, selected_scene["sceneId"]),
-        "当前分镜设计": storyboard_design_text_for_video(artifacts),
         "当前分块规划": current_block_plan,
         "视频提示词生成模式": video_prompt_generation_mode(body),
         "上一块视频提示词": previous_video_prompt_from_block_plan_text(current_block_plan),
@@ -813,13 +812,6 @@ def artifact_text(artifacts: dict[str, WorkflowArtifact], node_id: str) -> str:
     return json.dumps(artifact.output, ensure_ascii=False, indent=2)
 
 
-def storyboard_design_text_for_video(artifacts: dict[str, WorkflowArtifact]) -> str:
-    artifact = artifacts.get("storyboard_design")
-    if not artifact or not artifact.output:
-        return ""
-    return json.dumps(strip_storyboard_review_notes(artifact.output), ensure_ascii=False, indent=2)
-
-
 def video_block_plan_text_for_scene(artifacts: dict[str, WorkflowArtifact], episode_id: str, scene_id: str, body: RunWorkflowNodeBody) -> str:
     artifact = artifacts.get("storyboard_design")
     if not artifact or not artifact.output:
@@ -888,6 +880,8 @@ def previous_video_prompt_for_block(artifacts: dict[str, WorkflowArtifact], outp
         return ""
     previous_id = ids[index - 1]
     video_prompt = artifacts.get("video_prompt")
+    if not video_prompt or video_prompt.status != "done":
+        return f"上一块编号：{previous_id}，暂无已生成提示词。"
     groups = as_list(video_prompt.output.get("groups")) if video_prompt else []
     previous_group = next((as_dict(group) for group in groups if text_value(as_dict(group).get("block_id") or as_dict(group).get("group_id")) == previous_id), {})
     prompt = text_value(previous_group.get("prompt"))
@@ -941,7 +935,7 @@ def normalize_video_prompt_output(parsed: Any, block_plan_text: str) -> dict[str
     parsed_dict = as_dict(parsed)
     plan = parse_json_text(block_plan_text) if block_plan_text else {}
     blocks = [as_dict(item) for item in as_list(as_dict(plan).get("video_blocks")) if as_dict(item)]
-    prompt_items = as_list(parsed_dict.get("video_prompts")) or as_list(parsed_dict.get("groups"))
+    prompt_items = as_list(parsed_dict.get("video_prompts"))
     prompt_by_block_id: dict[str, dict[str, Any]] = {}
     for item in prompt_items:
         prompt_item = as_dict(item)
@@ -1117,7 +1111,6 @@ def summarize_variables_for_log(variables: dict[str, str]) -> str:
         "当前章节概要",
         "当前单集概要",
         "当前场次概要",
-        "当前分镜设计",
         "当前分块规划",
     ]
     return " / ".join(f"{key}:{len(variables.get(key, ''))}字" for key in keys if variables.get(key))
