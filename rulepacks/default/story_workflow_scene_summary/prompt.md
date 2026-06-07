@@ -21,7 +21,7 @@
 前后场概要：
 {{前后场概要}}
 
-资产真源：
+资产索引：
 {{资产真源}}
 
 ## 输出字段
@@ -32,6 +32,7 @@
 - `character_entry_states`：每人上场时内心状态、潜台词、弧线位置。
 - `must_emphasize_information`：关键物件、表情、动作、空间方位关系。
 - `spatial_relation`：只写剧本可推导的相对位置和位移。
+- `asset_bindings`：本场默认资产锚定，结构为 `{ "characters": [], "scenes": [], "props": [] }`；每项使用 `{ "display_name": "", "asset_id": "", "version_label": "", "state_note": "" }`。
 - `rhythm_atmosphere`
 - `carry_over_or_hook`
 - `continuity_risks`
@@ -45,6 +46,7 @@
 - `character_entry_states` 只写本场出场角色；角色心理必须能由本场剧本、单集概要或前后场概要支撑。
 - `must_emphasize_information` 只列本场必须被镜头强调的信息，不列普通动作。
 - `continuity_risks` 只列本场会影响后续的角色状态、道具状态、空间状态、信息认知差；没有就输出空数组。
-- `资产真源` 只用于名称对齐和连续性判断，不要从资产真源反推本场没有发生的剧情。
+- `asset_bindings` 只列本场实际出场或明确使用的角色、场景、关键道具；`display_name` 使用剧本里的自然称呼；`asset_id` 只能使用资产索引中已有 ID，匹配不到就留空，不得发明 ID；`version_label` 可使用资产索引中的版本名称。
+- `资产索引` 只用于名称对齐、ID 锚定和版本锚定；它不是剧情来源，也不提供外观描述，不要从资产索引反推本场没有发生的剧情。
 
 只输出 JSON。

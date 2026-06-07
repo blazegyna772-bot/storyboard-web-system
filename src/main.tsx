@@ -72,6 +72,7 @@ import {
   loadStoryWorkflowState,
   runStoryWorkflowAll,
   runStoryWorkflowNode,
+  saveStoryWorkflowArtifact,
   type StoryWorkflowArtifact,
   type StoryWorkflowNode,
   type StoryWorkflowNodeId,
@@ -665,6 +666,9 @@ function App() {
         episodeId: selectedEpisodeId,
         sceneId: selectedWorkflowSceneId,
         chapterId: options.chapterId,
+        blockId: options.blockId,
+        blockStart: options.blockStart,
+        blockEnd: options.blockEnd,
         executionMode: options.executionMode,
       });
       setStoryWorkflow((current) => {
@@ -680,6 +684,11 @@ function App() {
       });
       void refreshBackendStatus();
       void loadStoryWorkflowForProject(activeProject.projectId);
+      if (result.artifact.status === "error") {
+        appendLog("story-workflow", "error", `${nodeTitle} 执行失败`, result.artifact.error || "节点返回错误状态。");
+        showToast(`${nodeTitle} 执行失败`);
+        return result.artifact;
+      }
       appendLog("story-workflow", "success", `${nodeTitle} 执行完成`, nodeId === "chapter_summary" ? `章节概要已写入 ${options.chapterId || "当前章节"} 对应的 chapter_summary_xx.json。` : `${result.artifact.title} 已写入 artifacts/story_workflow/${nodeId}.json。`);
       showToast(`${nodeTitle} 执行完成`);
       return result.artifact;
@@ -707,6 +716,9 @@ function App() {
         sceneId: selectedWorkflowSceneId,
         chapterId: options.chapterId,
         chapterIds: options.chapterIds,
+        blockId: options.blockId,
+        blockStart: options.blockStart,
+        blockEnd: options.blockEnd,
         executionMode: options.executionMode,
       });
       setStoryWorkflow((current) => {
@@ -1271,10 +1283,14 @@ function App() {
             <VideoGenerationView
               projectId={activeProject.projectId}
               state={storyWorkflow}
+              assetReviewBundle={assetReviewBundle}
+              selectedEpisodeId={selectedEpisodeId}
+              onSelectEpisode={setSelectedEpisodeId}
+              selectedSceneId={selectedWorkflowSceneId}
+              onSelectScene={setSelectedWorkflowSceneId}
               runningNodeId={runningStoryNodeId}
               runningBatchLabel={runningStoryBatchLabel}
               onRunNode={handleRunStoryWorkflowNode}
-              onRunNodes={(nodeIds, options) => void handleRunStoryWorkflowNodes(nodeIds, "视频生成", options)}
               onRefresh={() => void loadStoryWorkflowForProject(activeProject.projectId)}
             />
           )}
@@ -2642,6 +2658,9 @@ function AssetReviewView({
 type StoryWorkflowRunOptions = {
   chapterId?: string;
   chapterIds?: string[];
+  blockId?: string;
+  blockStart?: string;
+  blockEnd?: string;
   executionMode?: StoryboardExecutionMode;
 };
 
@@ -2732,7 +2751,7 @@ function StoryboardPlanningView({
       <div className="page-header work-header">
         <div>
           <h2>分镜统筹</h2>
-          <p>执行单集概要、场次概要和分镜设计。当前先不接资产审阅真源，避免流程互相牵连。</p>
+          <p>执行单集概要、场次概要和分块规划。</p>
         </div>
         <div className="header-actions">
           <div className="mode-switch compact" aria-label="分镜统筹执行模式">
@@ -2784,34 +2803,282 @@ function StoryboardPlanningView({
 function VideoGenerationView({
   projectId,
   state,
+  assetReviewBundle,
+  selectedEpisodeId,
+  onSelectEpisode,
+  selectedSceneId,
+  onSelectScene,
   runningNodeId,
   runningBatchLabel,
   onRunNode,
-  onRunNodes,
   onRefresh,
 }: {
   projectId: string;
   state: StoryWorkflowState | null;
+  assetReviewBundle: AssetReviewBundle;
+  selectedEpisodeId: string;
+  onSelectEpisode: (episodeId: string) => void;
+  selectedSceneId: string;
+  onSelectScene: (sceneId: string) => void;
   runningNodeId: StoryWorkflowNodeId | "";
   runningBatchLabel: string;
   onRunNode: (nodeId: StoryWorkflowNodeId, options?: StoryWorkflowRunOptions) => Promise<StoryWorkflowArtifact | null>;
-  onRunNodes: (nodeIds: StoryWorkflowNodeId[], options?: StoryWorkflowRunOptions) => void;
   onRefresh: () => void;
 }) {
-  const nodes = filterStoryWorkflowNodes(state, "video");
+  const artifact = state?.artifacts.video_prompt;
+  const blockPlanArtifact = state?.artifacts.storyboard_design;
+  const promptGroups = artifact?.status === "done" ? asArray(artifact?.output?.groups).map(asRecord) : [];
+  const blockGroups = buildVideoGroupsFromBlockPlan(blockPlanArtifact?.output);
+  const groups = mergeVideoBlockGroups(blockGroups, promptGroups);
+  const groupIds = groups.map(videoBlockId).filter(Boolean);
+  const groupIdsKey = groupIds.join("|");
+  const firstGroupId = videoBlockId(groups[0]);
+  const workflowEpisodes = state?.episodes ?? [];
+  const activeWorkflowEpisode = workflowEpisodes.find((episode) => episode.episodeId === selectedEpisodeId) ?? workflowEpisodes[0];
+  const sceneOptions = activeWorkflowEpisode?.scenes ?? [];
+  const [selectedGroupId, setSelectedGroupId] = useState("");
+  const [promptDraft, setPromptDraft] = useState("");
+  const [isSavingPrompt, setIsSavingPrompt] = useState(false);
+  const [selectedVideoIndex, setSelectedVideoIndex] = useState(0);
+  const [batchSize, setBatchSize] = useState(1);
+  const [durationSeconds, setDurationSeconds] = useState(5);
+  const [blockStart, setBlockStart] = useState("");
+  const [blockEnd, setBlockEnd] = useState("");
+  const selectedGroup = groups.find((group) => videoBlockId(group) === selectedGroupId) ?? groups[0];
+  const selectedPrompt = textValue(selectedGroup?.prompt);
+  const promptArtifactError = artifact?.status === "error" ? textValue(artifact.error, "视频提示词生成失败。") : "";
+  const allAssetThumbs = buildVideoAssetThumbs(assetReviewBundle);
+  const anchoredAssetThumbs = buildAnchoredAssetThumbs(selectedGroup, allAssetThumbs);
+  const videoPaths = asTextArray(selectedGroup?.video_paths).concat(textValue(selectedGroup?.video_path) ? [textValue(selectedGroup?.video_path)] : []).filter(Boolean);
+  const selectedVideoPath = videoPaths[selectedVideoIndex] ?? "";
+
+  useEffect(() => {
+    if (!groups.length) {
+      setSelectedGroupId("");
+      setBlockStart("");
+      setBlockEnd("");
+      return;
+    }
+    if (!groupIds.includes(selectedGroupId)) setSelectedGroupId(firstGroupId);
+    if (!groupIds.includes(blockStart)) setBlockStart(firstGroupId);
+    if (!groupIds.includes(blockEnd)) setBlockEnd(firstGroupId);
+  }, [groupIdsKey, selectedGroupId, blockStart, blockEnd, firstGroupId]);
+
+  useEffect(() => {
+    setPromptDraft(selectedPrompt);
+  }, [selectedPrompt, selectedGroupId]);
+
+  useEffect(() => {
+    setSelectedVideoIndex(0);
+  }, [selectedGroupId]);
+
+  const saveSelectedPrompt = async () => {
+    if (!selectedGroup || !artifact) return;
+    const nextGroups = groups.map((group) => (
+      videoBlockId(group) === videoBlockId(selectedGroup)
+        ? { ...group, prompt: promptDraft, status: textValue(group.status, "draft") }
+        : group
+    ));
+    setIsSavingPrompt(true);
+    try {
+      await saveStoryWorkflowArtifact(projectId, "video_prompt", { output: { ...artifact.output, groups: nextGroups } });
+      onRefresh();
+    } finally {
+      setIsSavingPrompt(false);
+    }
+  };
+
+  const runCurrentBlockPrompt = async () => {
+    const blockId = videoBlockId(selectedGroup);
+    if (!blockId) return;
+    await onRunNode("video_prompt", { blockId });
+  };
+
+  const runScenePrompt = async () => {
+    await onRunNode("video_prompt");
+  };
+
+  const runBlockRangePrompt = async () => {
+    if (!blockStart && !blockEnd) return;
+    await onRunNode("video_prompt", { blockStart, blockEnd: blockEnd || blockStart });
+  };
+
   return (
-    <StoryWorkflowPageFrame
-      title="视频生成"
-      description="执行 06：把已确认分镜转成视频提示词草案。这里服务人工检查，不改分镜，不改资产真源。"
-      nodes={nodes}
-      projectId={projectId}
-      artifacts={state?.artifacts ?? {}}
-      runningNodeId={runningNodeId}
-      runningBatchLabel={runningBatchLabel}
-      onRunNode={onRunNode}
-      onRunNodes={(nodeIds, options) => onRunNodes(nodeIds?.length ? nodeIds : nodes.map((node) => node.id), options)}
-      onRefresh={onRefresh}
-    />
+    <section className="page-stack video-workspace-page">
+      <div className="video-selection-bar">
+        <div className="video-select-controls">
+          <strong>视频生成</strong>
+          <label>
+            集
+            <select value={selectedEpisodeId} onChange={(event) => onSelectEpisode(event.target.value)}>
+              {(workflowEpisodes.length ? workflowEpisodes : [{ episodeId: selectedEpisodeId || "EP01", title: "EP01", scenes: [] }]).map((episode) => (
+                <option value={episode.episodeId} key={episode.episodeId}>
+                  {episode.episodeId}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="video-scene-tabs">
+            {(sceneOptions.length ? sceneOptions : [{ sceneId: selectedSceneId || "SC01", title: "SC01" }]).map((scene) => (
+              <button key={scene.sceneId} className={scene.sceneId === selectedSceneId ? "active" : ""} onClick={() => onSelectScene(scene.sceneId)}>
+                {scene.sceneId}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="video-select-actions">
+          <button onClick={onRefresh}>
+            <RefreshCcw size={16} />
+            刷新
+          </button>
+        </div>
+      </div>
+
+      <div className="video-production-layout">
+        <aside className="video-group-list">
+          <div className="video-group-list-title">
+            <strong>视频块</strong>
+            <span>{groups.length}</span>
+          </div>
+          {groups.length ? groups.map((group, index) => {
+            const groupId = videoBlockId(group) || `VB${String(index + 1).padStart(3, "0")}`;
+            const isActive = videoBlockId(selectedGroup) === groupId;
+            return (
+              <button key={`${groupId}-${index}`} className={isActive ? "active" : ""} onClick={() => setSelectedGroupId(groupId)}>
+                <strong>{groupId}</strong>
+                <span>{textValue(group.duration_seconds)}秒</span>
+                <small>{textValue(group.source_text) || asTextArray(group.shot_nos).join(" / ")}</small>
+                <em className={`story-node-status ${textValue(group.status, "draft") === "done" ? "done" : "idle"}`}>{videoGroupStatusText(group.status)}</em>
+              </button>
+            );
+          }) : (
+            <div className="empty-state compact">暂无视频块。</div>
+          )}
+        </aside>
+
+        <section className="video-group-detail">
+          {selectedGroup ? (
+            <>
+              <div className="video-main-grid">
+                <section className="video-stage-panel">
+                  <div className="video-panel-title">
+                    <strong>生成视频</strong>
+                    <span>{videoPaths.length ? `${selectedVideoIndex + 1}/${videoPaths.length}` : "0/0"}</span>
+                  </div>
+                  <div className="video-preview-box">
+                    {selectedVideoPath ? <video src={toBackendAssetImageUrl(selectedVideoPath)} controls /> : <span>暂无视频</span>}
+                  </div>
+                  <div className="video-version-tabs">
+                    {videoPaths.length ? videoPaths.map((path, index) => (
+                      <button key={`${path}-${index}`} className={index === selectedVideoIndex ? "active" : ""} onClick={() => setSelectedVideoIndex(index)}>
+                        第{index + 1}版
+                      </button>
+                    )) : (
+                      <button disabled>暂无版本</button>
+                    )}
+                  </div>
+                </section>
+
+                <section className="video-stage-panel">
+                  <div className="video-panel-title">
+                    <strong>参考资产</strong>
+                    <span>{anchoredAssetThumbs.length}</span>
+                  </div>
+                  <AssetThumbGrid assets={anchoredAssetThumbs} emptyText="当前组暂无锚定资产。" />
+                </section>
+              </div>
+
+              <div className="video-work-bottom">
+                <section className="video-left-stack">
+                  <div className="video-generate-controls">
+                    <div className="video-panel-title">
+                      <strong>生成</strong>
+                      <span>{textValue(selectedGroup.block_id || selectedGroup.group_id)}</span>
+                    </div>
+                    <div className="video-control-row">
+                      <label>
+                        批量
+                        <input type="number" min={1} max={12} value={batchSize} onChange={(event) => setBatchSize(Math.max(1, Number(event.target.value) || 1))} />
+                      </label>
+                      <label>
+                        时长
+                        <input type="number" min={1} max={15} step={0.5} value={durationSeconds} onChange={(event) => setDurationSeconds(Math.max(1, Math.min(15, Number(event.target.value) || 1)))} />
+                      </label>
+                    </div>
+                    <div className="video-prompt-run-row">
+                      <label>
+                        起始块
+                        <select value={blockStart} onChange={(event) => setBlockStart(event.target.value)}>
+                          {groups.map((group, index) => {
+                            const id = videoBlockId(group) || `VB${String(index + 1).padStart(3, "0")}`;
+                            return <option value={id} key={id}>{id}</option>;
+                          })}
+                        </select>
+                      </label>
+                      <label>
+                        结束块
+                        <select value={blockEnd} onChange={(event) => setBlockEnd(event.target.value)}>
+                          {groups.map((group, index) => {
+                            const id = videoBlockId(group) || `VB${String(index + 1).padStart(3, "0")}`;
+                            return <option value={id} key={id}>{id}</option>;
+                          })}
+                        </select>
+                      </label>
+                    </div>
+                    <div className="video-action-row">
+                      <button onClick={() => void runScenePrompt()} disabled={Boolean(runningNodeId || runningBatchLabel || !groups.length)}>
+                        <Sparkles size={15} />
+                        整场提示词
+                      </button>
+                      <button onClick={() => void runCurrentBlockPrompt()} disabled={Boolean(runningNodeId || runningBatchLabel || !selectedGroup)}>
+                        <Sparkles size={15} />
+                        当前块提示词
+                      </button>
+                      <button onClick={() => void runBlockRangePrompt()} disabled={Boolean(runningNodeId || runningBatchLabel || !groups.length)}>
+                        <Sparkles size={15} />
+                        区间提示词
+                      </button>
+                      <button className="primary-button" disabled>
+                        <Play size={15} />
+                        生成视频
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="video-group-editor">
+                    <div className="video-group-editor-title">
+                      <strong>提示词</strong>
+                      <div>
+                        <button onClick={saveSelectedPrompt} disabled={isSavingPrompt || !artifact}>
+                          <Save size={15} />
+                          {isSavingPrompt ? "保存中" : "保存"}
+                        </button>
+                      </div>
+                    </div>
+                    {promptArtifactError && <div className="json-error">{promptArtifactError}</div>}
+                    <textarea value={promptDraft} onChange={(event) => setPromptDraft(event.target.value)} spellCheck={false} />
+                  </div>
+                </section>
+
+                <section className="video-asset-library">
+                  <div className="video-panel-title">
+                    <strong>全集资产</strong>
+                    <span>{allAssetThumbs.length}</span>
+                  </div>
+                  <div>
+                    <AssetLibrarySection title="角色" assets={allAssetThumbs.filter((asset) => asset.kind === "characters")} />
+                    <AssetLibrarySection title="场景" assets={allAssetThumbs.filter((asset) => asset.kind === "scenes")} />
+                    <AssetLibrarySection title="物品" assets={allAssetThumbs.filter((asset) => asset.kind === "props")} />
+                  </div>
+                </section>
+              </div>
+            </>
+          ) : (
+            <div className="empty-state">先生成视频组。</div>
+          )}
+        </section>
+      </div>
+    </section>
   );
 }
 
@@ -3279,7 +3546,28 @@ function ReviewSceneSummary({ data }: { data: Record<string, unknown> }) {
     return (
       <div className="story-artifact-review">
         <ReviewSection title={`场次概要（${sceneSummaries.length} 场）`}>
-          <GenericObjectList rows={sceneSummaries} />
+          <div className="generic-review-list">
+            {sceneSummaries.map((scene, index) => (
+              <article key={`${textValue(scene.scene_id, String(index + 1))}-${index}`}>
+                <div>
+                  <span>场次</span>
+                  <p>{textValue(scene.scene_id, `SC${String(index + 1).padStart(2, "0")}`)}</p>
+                </div>
+                <div>
+                  <span>戏剧任务</span>
+                  <p>{textValue(scene.scene_dramatic_task)}</p>
+                </div>
+                <div>
+                  <span>资产锚定</span>
+                  <AssetBindingSummary value={scene.asset_bindings} />
+                </div>
+                <div>
+                  <span>空间关系</span>
+                  <p>{textValue(scene.spatial_relation)}</p>
+                </div>
+              </article>
+            ))}
+          </div>
         </ReviewSection>
       </div>
     );
@@ -3317,11 +3605,55 @@ function ReviewSceneSummary({ data }: { data: Record<string, unknown> }) {
       <ReviewSection title="连续性风险">
         <BulletList items={asTextArray(data.continuity_risks)} emptyText="未输出连续性风险。" />
       </ReviewSection>
+      <ReviewSection title="资产锚定">
+        <AssetBindingSummary value={data.asset_bindings} />
+      </ReviewSection>
     </div>
   );
 }
 
 function ReviewStoryboardDesign({ data }: { data: Record<string, unknown> }) {
+  const blocks = asArray(data.video_blocks).map(asRecord);
+  if (blocks.length) {
+    const sceneBase = asRecord(data.scene_base);
+    return (
+      <div className="story-artifact-review">
+        <ReviewHero title={`${textValue(data.episode_id)} / ${textValue(data.scene_id)} 分块规划`} subtitle={textValue(sceneBase.scene_name || sceneBase.base_space_state)} />
+        <ReviewSection title={`视频块（${blocks.length} 块）`}>
+          <div className="storyboard-review-table-wrap">
+            <table className="storyboard-review-table">
+              <thead>
+                <tr>
+                  <th>块号</th>
+                  <th>时长</th>
+                  <th>剧本原文</th>
+                  <th>任务</th>
+                  <th>开始状态</th>
+                  <th>结束状态</th>
+                  <th>资产</th>
+                  <th>临时资产</th>
+                </tr>
+              </thead>
+              <tbody>
+                {blocks.map((block, index) => (
+                  <tr key={`${textValue(block.block_id, String(index + 1))}-${index}`}>
+                    <td className="shot-no">{textValue(block.block_id, `VB${String(index + 1).padStart(3, "0")}`)}</td>
+                    <td>{textValue(block.duration_seconds)}秒</td>
+                    <td>{textValue(block.source_text)}</td>
+                    <td>{textValue(block.block_task)}</td>
+                    <td>{textValue(block.start_state)}</td>
+                    <td>{textValue(block.end_state)}</td>
+                    <td><small>{formatAssetRefs(block.asset_refs)}</small></td>
+                    <td><small>{asTextArray(block.temp_assets).join(" / ") || "-"}</small></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </ReviewSection>
+      </div>
+    );
+  }
   const shots = asArray(data.shots).map(asRecord);
   return (
     <div className="story-artifact-review">
@@ -3332,50 +3664,73 @@ function ReviewStoryboardDesign({ data }: { data: Record<string, unknown> }) {
             <thead>
               <tr>
                 <th>镜号</th>
+                <th>类型</th>
                 <th>时长</th>
                 <th>景别</th>
-                <th>机位/运镜</th>
+                <th>运镜</th>
+                <th>空间关系</th>
                 <th>画面动作</th>
                 <th>对白/旁白</th>
-                <th>声音/转场</th>
-                <th>资产/连续性</th>
-                <th>钩子</th>
+                <th>光影</th>
+                <th>资产</th>
+                <th>审阅提醒</th>
               </tr>
             </thead>
             <tbody>
               {shots.map((shot, index) => (
                 <tr key={`${textValue(shot.shot_no, String(index + 1))}-${index}`}>
                   <td className="shot-no">{textValue(shot.shot_no, String(index + 1))}</td>
+                  <td>{textValue(shot.shot_type)}</td>
                   <td>{textValue(shot.duration_seconds)}秒</td>
                   <td>{textValue(shot.shot_size)}</td>
-                  <td>{[shot.camera_angle, shot.camera_movement].map((value) => textValue(value)).filter(Boolean).join(" / ")}</td>
+                  <td>{textValue(shot.camera_movement)}</td>
+                  <td>{textValue(shot.space_relation)}</td>
                   <td>{textValue(shot.screen_action)}</td>
                   <td>{textValue(shot.dialogue_or_vo)}</td>
-                  <td>{[shot.sound_music, shot.transition].map((value) => textValue(value)).filter(Boolean).join(" / ")}</td>
+                  <td>{textValue(shot.lighting_tone)}</td>
                   <td>
-                    <small>{asTextArray(shot.asset_refs).join(" / ")}</small>
-                    <p>{textValue(shot.continuity_requirements)}</p>
+                    <small>{formatAssetRefs(shot.asset_refs)}</small>
                   </td>
-                  <td>{shot.is_hook_shot ? "是" : ""}</td>
+                  <td><small>{formatReviewNotes(shot.review_notes)}</small></td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       </ReviewSection>
-      <div className="review-two-col">
-        <ReviewSection title="场内空间时序">
-          <PlainReviewText>{textValue(data.scene_spatial_timeline)}</PlainReviewText>
-        </ReviewSection>
-        <ReviewSection title="人工复核点">
-          <BulletList items={asTextArray(data.review_risks)} emptyText="未输出复核点。" />
-        </ReviewSection>
-      </div>
     </div>
   );
 }
 
 function ReviewVideoPrompt({ data }: { data: Record<string, unknown> }) {
+  const groups = asArray(data.groups).map(asRecord);
+  if (groups.length) {
+    return (
+      <div className="story-artifact-review">
+        <ReviewSection title={`视频组（${groups.length} 组）`}>
+          <div className="video-prompt-review-list">
+            {groups.map((group, index) => (
+              <article className="video-prompt-row" key={`${textValue(group.group_id, String(index + 1))}-${index}`}>
+                <div className="video-prompt-index">
+                  <strong>{textValue(group.group_id, `VG${String(index + 1).padStart(3, "0")}`)}</strong>
+                  <span>{textValue(group.duration_seconds)}秒</span>
+                  <small>{videoGroupStatusText(group.status)}</small>
+                </div>
+                <div className="video-prompt-body">
+                  <p>{textValue(group.prompt)}</p>
+                  <div className="video-prompt-meta">
+                    <span>镜头：{asTextArray(group.shot_nos).join(" / ") || "-"}</span>
+                    <span>参考图：{asTextArray(group.reference_image_paths).length ? asTextArray(group.reference_image_paths).join(" / ") : "无"}</span>
+                    <span>视频：{textValue(group.video_path, "无")}</span>
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
+        </ReviewSection>
+      </div>
+    );
+  }
   const prompts = asArray(data.video_prompts).map(asRecord);
   return (
     <div className="story-artifact-review">
@@ -3406,6 +3761,171 @@ function ReviewVideoPrompt({ data }: { data: Record<string, unknown> }) {
       </ReviewSection>
     </div>
   );
+}
+
+function videoGroupStatusText(value: unknown) {
+  const status = textValue(value, "draft");
+  if (status === "done") return "已完成";
+  if (status === "running") return "生成中";
+  if (status === "error") return "失败";
+  return "待生成";
+}
+
+function videoBlockId(group: Record<string, unknown> | undefined): string {
+  if (!group) return "";
+  return textValue(group.block_id || group.group_id);
+}
+
+function buildVideoGroupsFromBlockPlan(output: unknown): Record<string, unknown>[] {
+  const data = asRecord(output);
+  return asArray(data.video_blocks).map((blockValue, index) => {
+    const block = asRecord(blockValue);
+    const blockId = textValue(block.block_id, `VB${String(index + 1).padStart(3, "0")}`);
+    return {
+      group_id: blockId,
+      block_id: blockId,
+      duration_seconds: block.duration_seconds,
+      source_text: block.source_text,
+      prompt: "",
+      asset_refs: block.asset_refs,
+      reference_image_paths: [],
+      status: "draft",
+      video_path: "",
+    };
+  });
+}
+
+function mergeVideoBlockGroups(blockGroups: Record<string, unknown>[], promptGroups: Record<string, unknown>[]) {
+  if (!blockGroups.length) return promptGroups;
+  const promptByBlockId = new Map(promptGroups.map((group) => [videoBlockId(group), group]));
+  return blockGroups.map((block) => {
+    const prompt = promptByBlockId.get(videoBlockId(block));
+    return prompt
+      ? {
+          ...prompt,
+          ...block,
+          prompt: prompt.prompt,
+          reference_image_paths: prompt.reference_image_paths,
+          status: prompt.status,
+          video_path: prompt.video_path,
+          video_paths: prompt.video_paths,
+        }
+      : block;
+  });
+}
+
+type VideoAssetThumb = {
+  kind: AssetKind;
+  id: string;
+  name: string;
+  imageUrl: string;
+};
+
+function AssetLibrarySection({ title, assets }: { title: string; assets: VideoAssetThumb[] }) {
+  return (
+    <div className="video-asset-library-section">
+      <strong>{title}</strong>
+      <AssetThumbGrid assets={assets} emptyText="暂无资产。" />
+    </div>
+  );
+}
+
+function AssetThumbGrid({ assets, emptyText }: { assets: VideoAssetThumb[]; emptyText: string }) {
+  if (!assets.length) return <div className="video-asset-empty">{emptyText}</div>;
+  return (
+    <div className="video-asset-thumb-grid">
+      {assets.map((asset, index) => (
+        <div className="video-asset-thumb" key={`${asset.kind}-${asset.id || asset.name}-${index}`}>
+          <div>
+            {asset.imageUrl ? <img src={toBackendAssetImageUrl(asset.imageUrl)} alt={asset.name} /> : <span>{asset.name.slice(0, 2) || "资产"}</span>}
+          </div>
+          <small>{asset.name || asset.id || "未命名"}</small>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function buildVideoAssetThumbs(bundle: AssetReviewBundle): VideoAssetThumb[] {
+  const kinds: AssetKind[] = ["characters", "scenes", "props"];
+  return kinds.flatMap((kind) =>
+    (bundle.trueSources[kind] ?? []).map((row, index) => ({
+      kind,
+      id: row.id || row.asset_id || row.name || `${kind}-${index}`,
+      name: row.name || row.base_name || row.id || `${assetKindLabel(kind)}${index + 1}`,
+      imageUrl: row.selected_image || row.image_url || row.image_path || "",
+    })),
+  );
+}
+
+function buildAnchoredAssetThumbs(group: Record<string, unknown> | undefined, assets: VideoAssetThumb[]): VideoAssetThumb[] {
+  const refs = new Set<string>();
+  for (const ref of asArray(group?.asset_refs).map(asRecord)) {
+    for (const key of ["asset_id", "id", "name", "display_name"]) {
+      const value = textValue(ref[key]);
+      if (value) refs.add(value);
+    }
+  }
+  for (const value of [...asTextArray(group?.asset_ids), ...asTextArray(group?.reference_asset_ids)]) {
+    for (const part of value.split(/[,\s/：:]+/)) {
+      if (part.trim()) refs.add(part.trim());
+    }
+  }
+  if (!refs.size) return [];
+  return assets.filter((asset) => refs.has(asset.id) || refs.has(asset.name));
+}
+
+function AssetBindingSummary({ value }: { value: unknown }) {
+  const bindings = asRecord(value);
+  const groups: [string, unknown][] = [
+    ["角色", bindings.characters],
+    ["场景", bindings.scenes],
+    ["道具", bindings.props],
+  ];
+  const visibleGroups = groups.map(([label, items]) => [label, asArray(items).map(asRecord)] as [string, Record<string, unknown>[]]).filter(([, items]) => items.length);
+  if (!visibleGroups.length) return <EmptyReviewText text="未输出资产锚定。" />;
+  return (
+    <div className="asset-binding-summary">
+      {visibleGroups.map(([label, items]) => (
+        <div key={label}>
+          <strong>{label}</strong>
+          <span>{items.map(formatAssetBinding).join(" / ")}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function formatAssetBinding(record: Record<string, unknown>): string {
+  const displayName = textValue(record.display_name || record.name, "-");
+  const assetId = textValue(record.asset_id || record.id);
+  const versionLabel = textValue(record.version_label);
+  const stateNote = textValue(record.state_note);
+  return [displayName, assetId, versionLabel, stateNote].filter(Boolean).join(" · ");
+}
+
+function formatAssetRefs(value: unknown): string {
+  const refs = asArray(value).map(asRecord).filter((record) => Object.keys(record).length);
+  if (!refs.length) return asTextArray(value).join(" / ");
+  return refs.map((ref) => {
+    const displayName = textValue(ref.display_name || ref.name, "-");
+    const assetId = textValue(ref.asset_id || ref.id);
+    const usage = textValue(ref.usage);
+    const overrideNote = textValue(ref.override_note);
+    return [displayName, assetId, usage, overrideNote].filter(Boolean).join(" · ");
+  }).join(" / ");
+}
+
+function formatReviewNotes(value: unknown): string {
+  const notes = asRecord(value);
+  const stateChanges = asTextArray(notes.state_changes);
+  const continuity = asTextArray(notes.continuity_requirements);
+  const risks = asTextArray(notes.review_risks);
+  return [
+    stateChanges.length ? `状态：${stateChanges.join(" / ")}` : "",
+    continuity.length ? `连续：${continuity.join(" / ")}` : "",
+    risks.length ? `风险：${risks.join(" / ")}` : "",
+  ].filter(Boolean).join("；");
 }
 
 function GenericArtifactReview({ data }: { data: Record<string, unknown> }) {
@@ -5667,8 +6187,8 @@ const backendPromptStageCopy: Record<string, { title: string; description: strin
   story_workflow_episode_summary: { title: "单集概要", description: "明确本集任务、情绪、钩子和镜头强调点。" },
   "story_workflow_episode_summary_integrated": { title: "集场一体", description: "一次调用同时生成单集概要和场次概要。" },
   story_workflow_scene_summary: { title: "场次概要", description: "补足场内调度、潜台词和连续性边界。" },
-  story_workflow_storyboard_design: { title: "分镜设计", description: "按场输出可审阅分镜设计。" },
-  story_workflow_video_prompt: { title: "视频提示词", description: "把分镜转换为视频模型提示词草案。" },
+  story_workflow_storyboard_design: { title: "分块规划", description: "按场拆成可生产的视频生成块。" },
+  story_workflow_video_prompt: { title: "视频提示词", description: "把视频生成块转换为视频模型提示词草案。" },
 };
 
 function getBackendPromptTitle(stage: string) {

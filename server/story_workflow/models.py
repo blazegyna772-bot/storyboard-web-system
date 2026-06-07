@@ -63,6 +63,9 @@ class RunWorkflowNodeBody(BaseModel):
     episodeId: str | None = None
     sceneId: str | None = None
     chapterId: str | None = None
+    blockId: str | None = None
+    blockStart: str | None = None
+    blockEnd: str | None = None
     executionMode: Literal["integrated", "separate"] = "separate"
     maxTokens: int | None = None
 

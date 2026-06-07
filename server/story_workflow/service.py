@@ -102,11 +102,11 @@ NODES: list[WorkflowNode] = [
     ),
     WorkflowNode(
         id="storyboard_design",
-        title="分镜设计",
+        title="分块规划",
         page="storyboard",
         scope="场次",
-        inputSummary="本场剧本 + 当前单集概要 + 可选当前场次概要 + 资产真源占位",
-        outputSummary="镜号、景别、机位运动、画面动作、对白、音效、转场、资产引用",
+        inputSummary="本场剧本 + 当前单集概要 + 可选当前场次概要 + 资产索引",
+        outputSummary="场级底座、15秒生成块、剧本原文、资产锚定、空间状态",
         promptPath="story_workflow_storyboard_design/prompt.md",
         dependsOn=["episode_summary"],
     ),
@@ -114,9 +114,9 @@ NODES: list[WorkflowNode] = [
         id="video_prompt",
         title="视频提示词",
         page="video",
-        scope="镜头",
-        inputSummary="已确认分镜 + 资产真源图占位 + 视频模型规则",
-        outputSummary="视频正向提示词、参考图路径、时长、画幅、运动、负向提示词、模型参数",
+        scope="生成块",
+        inputSummary="当前生成块 + 场级底座 + 块资产锚定",
+        outputSummary="视频块提示词、参考图路径、时长、状态、视频路径",
         promptPath="story_workflow_video_prompt/prompt.md",
         dependsOn=["storyboard_design"],
     ),
@@ -258,6 +258,9 @@ async def run_workflow_node(project_id: str, body: RunWorkflowNodeBody) -> Workf
             )
             write_workflow_output(base, scene_artifact)
         else:
+            if node.id == "video_prompt":
+                parsed = normalize_video_prompt_output(parsed, variables.get("当前分块规划", ""))
+                parsed = merge_video_prompt_output(state.artifacts.get("video_prompt"), parsed, replace_all=is_full_scene_video_prompt(body))
             artifact = WorkflowArtifact(
                 nodeId=node.id,
                 title=node.title,
@@ -652,6 +655,7 @@ def build_node_variables(base: Path, script: str, artifacts: dict[str, WorkflowA
     chapter_ref = select_chapter_ref(artifacts, episodes, selected_episode["episodeId"], body.chapterId)
     chapter_script = build_chapter_script(episodes, chapter_ref)
     current_chapter_summary = chapter_summary_output_text(base, chapter_ref["chapter_id"])
+    current_block_plan = video_block_plan_text_for_scene(artifacts, selected_episode["episodeId"], selected_scene["sceneId"], body)
     return {
         "全集剧本": script,
         "当前章节剧本": chapter_script,
@@ -671,10 +675,100 @@ def build_node_variables(base: Path, script: str, artifacts: dict[str, WorkflowA
         "当前章节概要": current_chapter_summary,
         "当前单集概要": artifact_text(artifacts, "episode_summary"),
         "当前场次概要": scene_summary_text_for_scene(artifacts, selected_scene["sceneId"]),
-        "当前分镜设计": artifact_text(artifacts, "storyboard_design"),
-        "资产真源": "资产审阅衔接暂不接入；当前只允许使用剧本中的原名，不得发明资产 ID。",
-        "视频模型规则": "竖屏短剧，默认 9:16。输出字段必须可给后续视频模型配置层继续转换。",
+        "当前分镜设计": storyboard_design_text_for_video(artifacts),
+        "当前分块规划": current_block_plan,
+        "视频提示词生成模式": video_prompt_generation_mode(body),
+        "上一块视频提示词": previous_video_prompt_from_block_plan_text(current_block_plan),
+        "资产真源": asset_reference_index_text(base.parent.parent),
     }
+
+
+def video_prompt_generation_mode(body: RunWorkflowNodeBody) -> str:
+    if body.blockId:
+        return "当前块"
+    if body.blockStart or body.blockEnd:
+        return "区间"
+    return "整场"
+
+
+def is_full_scene_video_prompt(body: RunWorkflowNodeBody) -> bool:
+    return not body.blockId and not body.blockStart and not body.blockEnd
+
+
+def asset_reference_index_text(project_base: Path) -> str:
+    index = {
+        "characters": compact_asset_index_rows(project_base / "true_sources" / "characters.json", "角色"),
+        "scenes": compact_asset_index_rows(project_base / "true_sources" / "scenes.json", "场景"),
+        "props": compact_asset_index_rows(project_base / "true_sources" / "props.json", "道具"),
+    }
+    if not any(index.values()):
+        return "未找到资产索引；只能使用剧本原名，asset_id 留空，禁止发明资产 ID。"
+    return json.dumps(index, ensure_ascii=False, separators=(",", ":"))
+
+
+def compact_asset_index_rows(path: Path, asset_type: str) -> list[dict[str, Any]]:
+    rows = read_json(path, [])
+    if not isinstance(rows, list):
+        return []
+    compacted: list[dict[str, Any]] = []
+    for row in rows:
+        record = as_dict(row)
+        if not record:
+            continue
+        name = text_value(record.get("name"))
+        base_name = text_value(record.get("base_name"))
+        item = {
+            "asset_id": text_value(record.get("id")),
+            "name": name,
+            "base_name": base_name,
+            "type": asset_type,
+            "version_label": infer_asset_version_label(name, base_name),
+            "status": text_value(record.get("status")),
+        }
+        compacted_item = {key: value for key, value in item.items() if text_present(value)}
+        if compacted_item:
+            compacted.append(compacted_item)
+    return compacted
+
+
+def infer_asset_version_label(name: str, base_name: str) -> str:
+    if base_name and name.startswith(base_name):
+        version = name[len(base_name):].lstrip("-_ /")
+        return version.strip()
+    return ""
+
+
+def text_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    return str(value).strip()
+
+
+def compact_asset_rows(path: Path, keys: list[str]) -> list[dict[str, Any]]:
+    rows = read_json(path, [])
+    if not isinstance(rows, list):
+        return []
+    compacted: list[dict[str, Any]] = []
+    for row in rows:
+        record = as_dict(row)
+        if not record:
+            continue
+        item = {key: record.get(key) for key in keys if text_present(record.get(key))}
+        if item:
+            compacted.append(item)
+    return compacted
+
+
+def text_present(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, dict)):
+        return bool(value)
+    return True
 
 
 def build_episode_refs(script: str) -> list[WorkflowEpisodeRef]:
@@ -700,7 +794,9 @@ def build_user_prompt(node: WorkflowNode, variables: dict[str, str]) -> str:
         return f"请输出 {variables['当前集编号']} 的单集概要。"
     if node.id in {"scene_summary", "storyboard_design"}:
         return f"请处理 {variables['当前集编号']} / {variables['当前场编号']}。"
-    return "请根据已确认分镜输出视频提示词。"
+    if node.id == "video_prompt":
+        return "请根据当前分块规划中的 video_blocks 输出 video_prompts；只输出 JSON。"
+    return "请根据系统提示输出结果。"
 
 
 def render_template(template: str, variables: dict[str, str]) -> str:
@@ -715,6 +811,189 @@ def artifact_text(artifacts: dict[str, WorkflowArtifact], node_id: str) -> str:
     if not artifact or not artifact.output:
         return ""
     return json.dumps(artifact.output, ensure_ascii=False, indent=2)
+
+
+def storyboard_design_text_for_video(artifacts: dict[str, WorkflowArtifact]) -> str:
+    artifact = artifacts.get("storyboard_design")
+    if not artifact or not artifact.output:
+        return ""
+    return json.dumps(strip_storyboard_review_notes(artifact.output), ensure_ascii=False, indent=2)
+
+
+def video_block_plan_text_for_scene(artifacts: dict[str, WorkflowArtifact], episode_id: str, scene_id: str, body: RunWorkflowNodeBody) -> str:
+    artifact = artifacts.get("storyboard_design")
+    if not artifact or not artifact.output:
+        return ""
+    output = strip_storyboard_review_notes(artifact.output)
+    if not isinstance(output, dict):
+        return json.dumps(output, ensure_ascii=False, indent=2)
+    output_episode = text_value(output.get("episode_id"))
+    output_scene = text_value(output.get("scene_id"))
+    if output_episode == episode_id and output_scene == scene_id:
+        return json.dumps(filter_video_blocks_for_request(artifacts, output, body), ensure_ascii=False, indent=2)
+    return json.dumps({
+        "episode_id": episode_id,
+        "scene_id": scene_id,
+        "scene_base": {},
+        "video_blocks": [],
+        "warning": "未找到当前集/场对应的分块规划，请先运行当前场分块规划。",
+    }, ensure_ascii=False, indent=2)
+
+
+def filter_video_blocks_for_request(artifacts: dict[str, WorkflowArtifact], output: dict[str, Any], body: RunWorkflowNodeBody) -> dict[str, Any]:
+    blocks = [as_dict(item) for item in as_list(output.get("video_blocks")) if as_dict(item)]
+    if not blocks:
+        return output
+    selected_ids = requested_block_ids(blocks, body)
+    if not selected_ids:
+        return output
+    selected_set = set(selected_ids)
+    previous_prompt = previous_video_prompt_for_block(artifacts, output, selected_ids[0])
+    return {
+        **output,
+        "video_blocks": [block for block in blocks if text_value(block.get("block_id")) in selected_set],
+        "previous_video_prompt": previous_prompt,
+        "requested_block_range": {
+            "block_start": selected_ids[0],
+            "block_end": selected_ids[-1],
+        },
+    }
+
+
+def requested_block_ids(blocks: list[dict[str, Any]], body: RunWorkflowNodeBody) -> list[str]:
+    ids = [text_value(block.get("block_id")) for block in blocks if text_value(block.get("block_id"))]
+    if body.blockId:
+        block_id = text_value(body.blockId)
+        return [block_id] if block_id in ids else []
+    if not body.blockStart and not body.blockEnd:
+        return []
+    start = text_value(body.blockStart) or ids[0]
+    end = text_value(body.blockEnd) or start
+    if start not in ids or end not in ids:
+        return []
+    start_index = ids.index(start)
+    end_index = ids.index(end)
+    if start_index > end_index:
+        start_index, end_index = end_index, start_index
+    return ids[start_index:end_index + 1]
+
+
+def previous_video_prompt_for_block(artifacts: dict[str, WorkflowArtifact], output: dict[str, Any], block_id: str) -> str:
+    blocks = [as_dict(item) for item in as_list(output.get("video_blocks")) if as_dict(item)]
+    ids = [text_value(block.get("block_id")) for block in blocks]
+    if block_id not in ids:
+        return ""
+    index = ids.index(block_id)
+    if index <= 0:
+        return ""
+    previous_id = ids[index - 1]
+    video_prompt = artifacts.get("video_prompt")
+    groups = as_list(video_prompt.output.get("groups")) if video_prompt else []
+    previous_group = next((as_dict(group) for group in groups if text_value(as_dict(group).get("block_id") or as_dict(group).get("group_id")) == previous_id), {})
+    prompt = text_value(previous_group.get("prompt"))
+    if not prompt:
+        return f"上一块编号：{previous_id}，暂无已生成提示词。"
+    return f"上一块编号：{previous_id}\n{prompt}"
+
+
+def merge_video_prompt_output(existing_artifact: WorkflowArtifact | None, parsed: Any, replace_all: bool = False) -> Any:
+    parsed_dict = as_dict(parsed)
+    new_groups = [as_dict(group) for group in as_list(parsed_dict.get("groups")) if as_dict(group)]
+    if replace_all:
+        return parsed
+    if not existing_artifact or not existing_artifact.output or not new_groups:
+        return parsed
+    existing_groups = [as_dict(group) for group in as_list(existing_artifact.output.get("groups")) if as_dict(group)]
+    if not existing_groups:
+        return parsed
+    merged_by_id = {
+        text_value(group.get("block_id") or group.get("group_id")): group
+        for group in existing_groups
+        if text_value(group.get("block_id") or group.get("group_id"))
+    }
+    for group in new_groups:
+        block_id = text_value(group.get("block_id") or group.get("group_id"))
+        if block_id:
+            merged_by_id[block_id] = group
+    order = [text_value(group.get("block_id") or group.get("group_id")) for group in existing_groups]
+    for group in new_groups:
+        block_id = text_value(group.get("block_id") or group.get("group_id"))
+        if block_id and block_id not in order:
+            order.append(block_id)
+    return {
+        **existing_artifact.output,
+        **parsed_dict,
+        "groups": [merged_by_id[block_id] for block_id in order if block_id in merged_by_id],
+    }
+
+
+def previous_video_prompt_from_block_plan_text(value: str) -> str:
+    if not value:
+        return ""
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return ""
+    return text_value(as_dict(parsed).get("previous_video_prompt"))
+
+
+def normalize_video_prompt_output(parsed: Any, block_plan_text: str) -> dict[str, Any]:
+    parsed_dict = as_dict(parsed)
+    plan = parse_json_text(block_plan_text) if block_plan_text else {}
+    blocks = [as_dict(item) for item in as_list(as_dict(plan).get("video_blocks")) if as_dict(item)]
+    prompt_items = as_list(parsed_dict.get("video_prompts")) or as_list(parsed_dict.get("groups"))
+    prompt_by_block_id: dict[str, dict[str, Any]] = {}
+    for item in prompt_items:
+        prompt_item = as_dict(item)
+        block_id = text_value(prompt_item.get("block_id") or prompt_item.get("group_id"))
+        if block_id:
+            prompt_by_block_id[block_id] = prompt_item
+    groups: list[dict[str, Any]] = []
+    for index, block in enumerate(blocks):
+        block_id = text_value(block.get("block_id")) or f"VB{index + 1:03d}"
+        prompt_item = prompt_by_block_id.get(block_id, {})
+        prompt = normalized_prompt_text(prompt_item)
+        if not prompt:
+            prompt = text_value(prompt_item.get("prompt"))
+        groups.append({
+            "group_id": block_id,
+            "block_id": block_id,
+            "duration_seconds": block.get("duration_seconds"),
+            "source_text": block.get("source_text"),
+            "prompt": prompt,
+            "asset_refs": as_list(block.get("asset_refs")),
+            "reference_image_paths": [],
+            "status": "draft",
+            "video_path": "",
+        })
+    if not groups:
+        raise ValueError("视频提示词输出无有效块，请检查 LLM JSON 输出。")
+    missing = [text_value(group.get("block_id")) for group in groups if not text_value(group.get("prompt"))]
+    if missing:
+        raise ValueError(f"视频提示词缺少块内容：{', '.join(missing)}")
+    return {"groups": groups}
+
+
+def normalized_prompt_text(prompt_item: dict[str, Any]) -> str:
+    lines = as_list(prompt_item.get("prompt_lines"))
+    if lines:
+        return "\n".join(text_value(line) for line in lines if text_present(line)).strip()
+    prompt = prompt_item.get("prompt")
+    if isinstance(prompt, list):
+        return "\n".join(text_value(line) for line in prompt if text_present(line)).strip()
+    return text_value(prompt)
+
+
+def strip_storyboard_review_notes(value: Any) -> Any:
+    if isinstance(value, list):
+        return [strip_storyboard_review_notes(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: strip_storyboard_review_notes(item)
+            for key, item in value.items()
+            if key != "review_notes"
+        }
+    return value
 
 
 def chapter_summary_output_text(base: Path, chapter_id: str) -> str:
@@ -839,6 +1118,7 @@ def summarize_variables_for_log(variables: dict[str, str]) -> str:
         "当前单集概要",
         "当前场次概要",
         "当前分镜设计",
+        "当前分块规划",
     ]
     return " / ".join(f"{key}:{len(variables.get(key, ''))}字" for key in keys if variables.get(key))
 
