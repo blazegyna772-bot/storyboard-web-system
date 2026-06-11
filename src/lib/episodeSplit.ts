@@ -11,29 +11,94 @@ export interface EpisodeSplitPreviewData {
   warnings: string[];
 }
 
-export interface EpisodeSplitDraft {
-  fileName: string;
-  sourceText: string;
-  customRule: string;
-  preview: EpisodeSplitPreviewData;
+export interface EpisodeSplitRule {
+  id: string;
+  name: string;
+  pattern: string;
+  description: string;
+  enabled: boolean;
 }
 
-export const defaultEpisodeSplitRules = [
-  "^\\s*第\\s*([0-9０-９]+)\\s*集(?:\\s+.*)?$",
-  "^\\s*第\\s*([一二三四五六七八九十百零〇两]+)\\s*集(?:\\s+.*)?$",
-  "^\\s*第\\s*([0-9０-９]+)\\s*话(?:\\s+.*)?$",
-  "^\\s*第\\s*([一二三四五六七八九十百零〇两]+)\\s*话(?:\\s+.*)?$",
-  "^\\s*EP\\s*([0-9０-９]+)(?:\\s+.*)?$",
-  "^\\s*E\\s*([0-9０-９]+)(?:\\s+.*)?$",
-  "^\\s*Episode\\s*([0-9０-９]+)(?:\\s+.*)?$",
-  "^\\s*([0-9０-９]+)\\s*[\\.、-]?\\s*集(?:\\s+.*)?$",
+const episodeSplitRulesKey = "episode-split-rules-v1";
+
+export const defaultEpisodeSplitRules: EpisodeSplitRule[] = [
+  {
+    id: "zh-number-episode",
+    name: "第 N 集",
+    pattern: "^\\s*第\\s*([0-9０-９]+)\\s*集(?:\\s+.*)?$",
+    description: "匹配“第12集”“第 12 集 标题”。",
+    enabled: true,
+  },
+  {
+    id: "zh-cn-episode",
+    name: "第 中文数 集",
+    pattern: "^\\s*第\\s*([一二三四五六七八九十百零〇两]+)\\s*集(?:\\s+.*)?$",
+    description: "匹配“第十二集”。",
+    enabled: true,
+  },
+  {
+    id: "zh-number-chapter",
+    name: "第 N 话",
+    pattern: "^\\s*第\\s*([0-9０-９]+)\\s*话(?:\\s+.*)?$",
+    description: "匹配“第12话”。",
+    enabled: false,
+  },
+  {
+    id: "ep-number",
+    name: "EP N",
+    pattern: "^\\s*EP\\s*([0-9０-９]+)(?:\\s+.*)?$",
+    description: "匹配“EP12”。",
+    enabled: false,
+  },
+  {
+    id: "e-number",
+    name: "E N",
+    pattern: "^\\s*E\\s*([0-9０-９]+)(?:\\s+.*)?$",
+    description: "匹配“E12”。",
+    enabled: false,
+  },
 ];
 
-export function splitScriptIntoEpisodes(script: string, customRule: string): EpisodeSplitPreviewData {
+export function loadEpisodeSplitRules(): EpisodeSplitRule[] {
+  const raw = localStorage.getItem(episodeSplitRulesKey);
+  if (!raw) return defaultEpisodeSplitRules;
+  try {
+    return mergeEpisodeSplitRules(normalizeEpisodeSplitRules(JSON.parse(raw)));
+  } catch {
+    localStorage.removeItem(episodeSplitRulesKey);
+    return defaultEpisodeSplitRules;
+  }
+}
+
+export function saveEpisodeSplitRules(rules: EpisodeSplitRule[]) {
+  localStorage.setItem(episodeSplitRulesKey, JSON.stringify(mergeEpisodeSplitRules(normalizeEpisodeSplitRules(rules))));
+}
+
+export function normalizeEpisodeSplitRules(value: unknown): EpisodeSplitRule[] {
+  if (!Array.isArray(value)) return defaultEpisodeSplitRules;
+  const normalized = value
+    .map((rule, index) => {
+      if (!rule || typeof rule !== "object") return null;
+      const item = rule as Partial<EpisodeSplitRule>;
+      return {
+        id: item.id || `episode-rule-${index + 1}`,
+        name: item.name || `规则 ${index + 1}`,
+        pattern: item.pattern || "",
+        description: item.description || "",
+        enabled: item.enabled !== false,
+      };
+    })
+    .filter((rule): rule is EpisodeSplitRule => Boolean(rule?.pattern));
+  return normalized.length ? normalized : defaultEpisodeSplitRules;
+}
+
+export function splitScriptIntoEpisodes(script: string, rulesInput: EpisodeSplitRule[] | string): EpisodeSplitPreviewData {
   const normalized = script.replace(/\r\n?/g, "\n").trim();
   if (!normalized) return { episodes: [], warnings: ["当前没有剧本文本。"] };
 
-  const ruleTexts = [...defaultEpisodeSplitRules, customRule.trim()].filter(Boolean);
+  const ruleTexts = normalizeSplitRuleInput(rulesInput)
+    .filter((rule) => rule.enabled && rule.pattern.trim())
+    .map((rule) => rule.pattern.trim());
   const rules = ruleTexts.flatMap((ruleText) => {
     try {
       return [new RegExp(ruleText, "i")];
@@ -75,7 +140,7 @@ export function splitScriptIntoEpisodes(script: string, customRule: string): Epi
 
 export function ensureEpisodeHeading(text: string, episodeNumber: number) {
   const trimmed = text.trim();
-  const preview = splitScriptIntoEpisodes(trimmed, "");
+  const preview = splitScriptIntoEpisodes(trimmed, defaultEpisodeSplitRules);
   if (preview.episodes.length === 1 && preview.episodes[0]?.title !== "未识别分集标记") return normalizeEpisodeForStorage(preview.episodes[0]);
   return `第${episodeNumber}集\n${trimmed}`;
 }
@@ -100,16 +165,57 @@ export function replaceEpisodeSourceText(analysis: ScriptAnalysis, episodeId: st
 
 function buildEpisodeSplitWarnings(episodes: EpisodeSplitItem[]) {
   const warnings: string[] = [];
+  const seen = new Set<number>();
+  const episodeNumbers = episodes.map((episode) => episode.episodeNumber).filter((number) => number > 0);
+  const minEpisodeNumber = episodeNumbers.length ? Math.min(...episodeNumbers) : 0;
+  const maxEpisodeNumber = episodeNumbers.length ? Math.max(...episodeNumbers) : 0;
+  const averageLength = episodes.length ? episodes.reduce((sum, episode) => sum + episode.text.length, 0) / episodes.length : 0;
+
+  if (minEpisodeNumber === 1 && maxEpisodeNumber > 0) {
+    const missing = [];
+    for (let number = 1; number <= maxEpisodeNumber; number += 1) {
+      if (!episodeNumbers.includes(number)) missing.push(number);
+    }
+    if (missing.length) warnings.push(`缺少第 ${missing.join("、")} 集。`);
+  }
+
   episodes.forEach((episode, index) => {
     const expected = index + 1;
-    if (episode.episodeNumber !== expected) {
-      warnings.push(`第 ${expected} 段识别为 EP${String(episode.episodeNumber).padStart(2, "0")}，可能存在缺集或标记异常。`);
+    if (seen.has(episode.episodeNumber)) {
+      warnings.push(`${episode.title} 与前文集号重复。`);
     }
-    if (episode.text.length < 80) {
-      warnings.push(`${episode.title} 文本较短，建议复核是否切分错误。`);
+    seen.add(episode.episodeNumber);
+    if (episode.episodeNumber !== expected) {
+      warnings.push(`第 ${expected} 段识别为第 ${episode.episodeNumber} 集，集号顺序异常。`);
+    }
+    const charCount = episode.text.length;
+    if (charCount < 80) {
+      warnings.push(`${episode.title} 文本过短，仅 ${charCount} 字，建议复核是否切分错误。`);
+    }
+    if (charCount > 8000) {
+      warnings.push(`${episode.title} 文本过长，${charCount.toLocaleString()} 字，建议复核是否合并了多集。`);
+    }
+    if (averageLength >= 300 && charCount < averageLength * 0.35) {
+      warnings.push(`${episode.title} 字数明显低于平均值，建议复核边界。`);
+    }
+    if (averageLength >= 300 && charCount > averageLength * 2.4) {
+      warnings.push(`${episode.title} 字数明显高于平均值，建议复核边界。`);
     }
   });
   return warnings;
+}
+
+function normalizeSplitRuleInput(input: EpisodeSplitRule[] | string) {
+  if (Array.isArray(input)) return mergeEpisodeSplitRules(normalizeEpisodeSplitRules(input));
+  const customRule = input.trim();
+  return customRule ? [...defaultEpisodeSplitRules, { id: "custom", name: "自定义规则", pattern: customRule, description: "", enabled: true }] : defaultEpisodeSplitRules;
+}
+
+function mergeEpisodeSplitRules(savedRules: EpisodeSplitRule[]) {
+  const savedById = new Map(savedRules.map((rule) => [rule.id, rule]));
+  const mergedDefaults = defaultEpisodeSplitRules.map((rule) => ({ ...rule, ...savedById.get(rule.id), id: rule.id }));
+  const customRules = savedRules.filter((rule) => !defaultEpisodeSplitRules.some((defaultRule) => defaultRule.id === rule.id));
+  return [...mergedDefaults, ...customRules];
 }
 
 function parseEpisodeMarkerNumber(value: string | undefined) {

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 import secrets
+import base64
+import binascii
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -105,11 +107,17 @@ def empty_analysis(options: dict[str, Any] | None) -> dict[str, Any]:
 
 def create_project_record(name: str, options: dict[str, Any] | None) -> StoryboardProject:
     safe_name = name.strip() or default_project_name()
+    now = now_iso()
     return StoryboardProject(
         projectId=create_project_id(),
         name=safe_name,
         folderName=safe_folder_name(safe_name),
-        updatedAt=now_iso(),
+        createdAt=now,
+        updatedAt=now,
+        description="",
+        owner="",
+        status="制作中",
+        coverImage="",
         script="",
         options=options or {},
         analysis=empty_analysis(options),
@@ -123,6 +131,8 @@ def project_dir(root_path: Path, project: StoryboardProject) -> Path:
 def write_project(root_path: Path, project: StoryboardProject) -> StoryboardProject:
     folder_name = safe_folder_name(project.folderName or project.name)
     project.folderName = folder_name
+    if not project.createdAt:
+        project.createdAt = project.updatedAt or now_iso()
     project.updatedAt = now_iso()
     base = root_path / folder_name
     episodes_dir = base / "input" / "episodes"
@@ -179,6 +189,11 @@ def read_project_by_folder(root_path: Path, folder_name: str, include_script: bo
     manifest.setdefault("name", manifest.get("title") or manifest.get("projectId") or folder_name)
     manifest.setdefault("folderName", folder_name)
     manifest.setdefault("updatedAt", manifest.get("updated_at") or manifest.get("created_at") or now_iso())
+    manifest.setdefault("createdAt", manifest.get("created_at") or manifest.get("updatedAt") or now_iso())
+    manifest.setdefault("description", "")
+    manifest.setdefault("owner", "")
+    manifest.setdefault("status", "制作中")
+    manifest.setdefault("coverImage", "")
     manifest.setdefault("analysis", empty_analysis(manifest.get("options")))
     manifest.setdefault("options", {})
     return StoryboardProject(**manifest)
@@ -213,3 +228,54 @@ def delete_project(root_path: Path, project_id: str) -> None:
     import shutil
 
     shutil.rmtree(base, ignore_errors=True)
+
+
+def split_data_url(data_url: str) -> tuple[str, str]:
+    if "," not in data_url:
+        raise ValueError("Invalid image data")
+    header, encoded = data_url.split(",", 1)
+    if not header.startswith("data:image/"):
+        raise ValueError("Only image data URLs are supported")
+    return header, encoded
+
+
+def suffix_from_data_url(header: str) -> str:
+    mime = header.split(";", 1)[0].replace("data:", "")
+    return {
+        "image/jpeg": ".jpg",
+        "image/jpg": ".jpg",
+        "image/png": ".png",
+        "image/webp": ".webp",
+        "image/gif": ".gif",
+    }.get(mime, ".png")
+
+
+def store_project_cover(root_path: Path, project_id: str, filename: str, data_url: str) -> StoryboardProject:
+    project = read_project(root_path, project_id, include_script=False)
+    base = project_dir(root_path, project)
+    header, encoded = split_data_url(data_url)
+    suffix = Path(filename).suffix.lower() or suffix_from_data_url(header)
+    target = base / "assets" / "project" / f"cover_{secrets.token_hex(4)}{suffix}"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        target.write_bytes(base64.b64decode(encoded))
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("Invalid image data") from exc
+    project.coverImage = project_cover_url(project_id, target.name)
+    return write_project(root_path, project)
+
+
+def project_cover_url(project_id: str, filename: str) -> str:
+    return f"/api/projects/{project_id}/cover/{filename}"
+
+
+def get_project_cover_path(root_path: Path, project_id: str, filename: str) -> Path:
+    project = read_project(root_path, project_id, include_script=False)
+    base = project_dir(root_path, project)
+    target = (base / "assets" / "project" / Path(filename).name).resolve()
+    allowed_root = (base / "assets" / "project").resolve()
+    if allowed_root not in target.parents:
+        raise ValueError("Invalid cover path")
+    if not target.exists():
+        raise FileNotFoundError("Cover not found")
+    return target

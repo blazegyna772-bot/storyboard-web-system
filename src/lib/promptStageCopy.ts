@@ -1,5 +1,5 @@
 export const backendPromptStageCopy: Record<string, { title: string; description: string }> = {
-  script_check: { title: "剧本轻度校检", description: "检查标点、场次、名称、断行等疑点。" },
+  script_check: { title: "剧本轻度校检", description: "检查标点、场次、名称、断行等问题。" },
   script_split: { title: "合集分集规则", description: "识别全集剧本里的分集边界。" },
   asset_extract_characters: { title: "角色资产识别", description: "从剧本文本提取角色资产候选。" },
   asset_extract_scenes: { title: "场景资产识别", description: "从剧本文本提取空间、场景资产候选。" },

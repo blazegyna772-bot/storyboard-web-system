@@ -65,7 +65,6 @@ export function AssetReviewView({
       <div className="page-header work-header">
         <div>
           <h2>资产审阅</h2>
-          <p>主工作区只处理最终资产卡片；records 作为来源记录按需查看。</p>
         </div>
         <div className="header-actions">
           <button onClick={() => onExtractRecords(activeKind)} disabled={isCurrentKindExtracting}>

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from server.projects.models import StoryboardProject
@@ -14,6 +15,8 @@ from server.projects.service import (
     read_project,
     remove_root,
     require_active_root,
+    get_project_cover_path,
+    store_project_cover,
     write_project,
 )
 
@@ -31,6 +34,11 @@ class CreateProjectBody(BaseModel):
 
 class SaveProjectBody(BaseModel):
     project: StoryboardProject
+
+
+class ProjectCoverBody(BaseModel):
+    filename: str
+    dataUrl: str
 
 
 @router.get("/roots")
@@ -92,6 +100,28 @@ async def save_project(project_id: str, body: SaveProjectBody):
         return {"project": write_project(root, body.project).model_dump()}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/{project_id}/cover")
+async def upload_project_cover(project_id: str, body: ProjectCoverBody):
+    try:
+        root = require_active_root()
+        return {"project": store_project_cover(root, project_id, body.filename, body.dataUrl).model_dump()}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+
+@router.get("/{project_id}/cover/{filename}")
+async def get_project_cover(project_id: str, filename: str):
+    try:
+        root = require_active_root()
+        return FileResponse(get_project_cover_path(root, project_id, filename))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Cover not found")
 
 
 @router.delete("/{project_id}")

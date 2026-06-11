@@ -65,7 +65,6 @@ export function TaskRecordView({
       <div className="page-header work-header">
         <div>
           <h2>任务记录</h2>
-          <p>按用户触发的一次操作记录耗时任务，用来检查输入、输出、产物和失败原因。</p>
         </div>
         <div className="actions-row">
           <button onClick={onRefresh}>

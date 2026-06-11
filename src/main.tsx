@@ -28,17 +28,18 @@ import { AssetReviewView, buildTrueSourceFromRecord, countAssetBundleRows } from
 import { PipelineConfigView, ToolDrawer } from "./components/ConfigViews";
 import { DevLogPanel, createDevLog, type DevLogEntry, type DevLogLevel } from "./components/DevLogPanel";
 import { DeleteProjectDialog, ProjectManagementView, ProjectNameDialog, ProjectRootDialog, RemoveRootDialog } from "./components/ProjectManagementView";
-import { EpisodeSplitPreviewDialog, ScriptRuleConfigDialog, ScriptWorkspace } from "./components/ScriptWorkspace";
+import { ScriptRuleConfigDialog, ScriptWorkspace } from "./components/ScriptWorkspace";
 import { StoryPlanningView, StoryboardPlanningView, type StoryboardExecutionMode, type StoryWorkflowRunOptions } from "./components/StoryWorkflowViews";
 import { TaskRecordView } from "./components/TaskRecordView";
 import { VideoGenerationView } from "./components/VideoGenerationView";
 import { assetKindLabel } from "./lib/assetLabels";
 import {
   ensureEpisodeHeading,
-  formatEpisodeSplitPreview,
+  loadEpisodeSplitRules,
+  saveEpisodeSplitRules,
   serializeAnalysisScript,
   splitScriptIntoEpisodes,
-  type EpisodeSplitDraft,
+  type EpisodeSplitRule,
 } from "./lib/episodeSplit";
 import {
   emptyAssetReviewBundle,
@@ -60,6 +61,7 @@ import {
   pickBackendDirectory,
   removeBackendRoot,
   saveBackendProject,
+  uploadBackendProjectCover,
   type BackendRoot,
 } from "./lib/projectApi";
 import {
@@ -86,7 +88,6 @@ import {
   listBackendLlmLogs,
   listBackendRulepacks,
   loadBackendPromptLibrary,
-  loadBackendPrompt,
   createBackendPromptVersion,
   updateBackendPromptVersion,
   deleteBackendPromptVersion,
@@ -154,8 +155,8 @@ function App() {
   const [projectPendingDelete, setProjectPendingDelete] = useState<StoryboardProject | null>(null);
   const [rootPendingRemove, setRootPendingRemove] = useState<BackendRoot | null>(null);
   const [scriptQualityRules, setScriptQualityRules] = useState<ScriptQualityRule[]>(() => loadScriptQualityRules());
+  const [episodeSplitRules, setEpisodeSplitRules] = useState<EpisodeSplitRule[]>(() => loadEpisodeSplitRules());
   const [isScriptRuleDialogOpen, setIsScriptRuleDialogOpen] = useState(false);
-  const [episodeSplitDraft, setEpisodeSplitDraft] = useState<EpisodeSplitDraft | null>(null);
   const emptyProject = useMemo(
     () =>
       createProject({
@@ -193,7 +194,7 @@ function App() {
     createDevLog("stage:01", "success", "剧本校验规则可用", "scriptQualityReport 已在前端实时计算。"),
     createDevLog("stage:02", "info", "生产流程可用", "当前流程：剧本统筹、资产审阅、分镜统筹、视频生成。"),
   ]);
-  const scriptQuality = useMemo(() => buildScriptQualityReport(script), [script]);
+  const scriptQuality = useMemo(() => buildScriptQualityReport(script, scriptQualityRules), [script, scriptQualityRules]);
   const currentScriptText = useMemo(() => serializeAnalysisScript(analysis), [analysis]);
 
   const options: AnalysisOptions = useMemo(
@@ -219,7 +220,6 @@ function App() {
   const [backendImageTasks, setBackendImageTasks] = useState<BackendImageTask[]>([]);
   const [backendLlmLogDetail, setBackendLlmLogDetail] = useState<BackendLlmLog | null>(null);
   const [backendImageLogDetail, setBackendImageLogDetail] = useState<BackendImageLog | null>(null);
-  const [selectedBackendPromptContent, setSelectedBackendPromptContent] = useState("");
   const [backendLlmHasApiKey, setBackendLlmHasApiKey] = useState(false);
   const [backendImageHasApiKey, setBackendImageHasApiKey] = useState(false);
   const runningTopTasks = useMemo(
@@ -501,6 +501,36 @@ function App() {
     void loadAndApplyProject(project);
   }
 
+  async function handleUpdateProjectCover(projectId: string, file: File) {
+    const baseProject = projectStore.projects.find((project) => project.projectId === projectId);
+    if (!baseProject) return;
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      const result = projectRoot
+        ? await uploadBackendProjectCover(projectId, file.name, dataUrl)
+        : { project: { ...baseProject, coverImage: dataUrl, updatedAt: new Date().toISOString() } };
+      const nextProject: StoryboardProject = {
+        ...baseProject,
+        ...result.project,
+        script: result.project.script || baseProject.script,
+        analysis: result.project.analysis || baseProject.analysis,
+        options: result.project.options || baseProject.options,
+      };
+      setProjectStore((current) => {
+        const projects = current.projects.map((project) => (project.projectId === projectId ? nextProject : project));
+        return { ...current, projects };
+      });
+      if (projectId === activeProject.projectId) {
+        updateActiveProject((project) => (project.projectId === projectId ? nextProject : project));
+      }
+      appendLog("project-files", "success", "项目封面已保存", projectRoot ? `${nextProject.folderName || toSafeFolderName(nextProject.name)}/assets/project` : "当前未连接后端根目录，封面仅保存在本地状态。");
+      showToast("项目封面已保存");
+    } catch (error) {
+      appendLog("project-files", "warning", "项目封面保存失败", error instanceof Error ? error.message : "未知错误");
+      showToast("项目封面保存失败");
+    }
+  }
+
   function updateImageConfig(config: ImageGenerationConfig) {
     const normalized = normalizeImageConfig(config);
     void saveBackendImageSettings(normalized)
@@ -598,7 +628,7 @@ function App() {
         showToast(`${nodeTitle} 执行失败`);
         return result.artifact;
       }
-      appendLog("story-workflow", "success", `${nodeTitle} 执行完成`, nodeId === "chapter_summary" ? `章节概要已写入 ${options.chapterId || "当前章节"} 对应的 chapter_summary_xx.json。` : `${result.artifact.title} 已写入 artifacts/story_workflow/${nodeId}.json。`);
+      appendLog("story-workflow", "success", `${nodeTitle} 执行完成`, workflowArtifactWriteMessage(nodeId, selectedEpisodeId, selectedWorkflowSceneId, options.chapterId));
       showToast(`${nodeTitle} 执行完成`);
       return result.artifact;
     } catch (error) {
@@ -640,7 +670,7 @@ function App() {
       });
       void refreshBackendStatus();
       void loadStoryWorkflowForProject(activeProject.projectId);
-      appendLog("story-workflow", "success", `${label} 执行完成`, `${result.artifacts.length} 个节点已写入 artifacts/story_workflow。`);
+      appendLog("story-workflow", "success", `${label} 执行完成`, `${result.artifacts.length} 个节点已写入 artifacts/story_workflow；分镜/视频节点按当前集场隔离保存。`);
       showToast(`${label} 执行完成`);
     } catch (error) {
       appendLog("story-workflow", "error", `${label} 执行失败`, error instanceof Error ? error.message : "未知错误");
@@ -650,19 +680,6 @@ function App() {
     } finally {
       setRunningStoryBatchLabel("");
     }
-  }
-
-  async function handleFileUpload(file: File | undefined) {
-    if (!file) return;
-    const text = await file.text();
-    const customRule = localStorage.getItem("custom-episode-split-rule") ?? "";
-    setEpisodeSplitDraft({
-      fileName: file.name,
-      sourceText: text,
-      customRule,
-      preview: splitScriptIntoEpisodes(text, customRule),
-    });
-    appendLog("input", "info", "合集剧本已读取", `${file.name}，等待确认分集后写入。`);
   }
 
   async function handleFilesUpload(files: FileList | null) {
@@ -677,7 +694,7 @@ function App() {
     if (!file) return;
     const text = await file.text();
     const episodeNumberSafe = Math.max(1, Math.floor(episodeNumber || 1));
-    const currentPreview = splitScriptIntoEpisodes(script, "");
+    const currentPreview = splitScriptIntoEpisodes(script, episodeSplitRules);
     const nextEpisodeText = ensureEpisodeHeading(text, mode === "append" ? currentPreview.episodes.length + 1 : episodeNumberSafe);
     if (mode === "append") {
       applyScriptToProject([script.trim(), nextEpisodeText].filter(Boolean).join("\n\n"), false, "单集已追加");
@@ -700,7 +717,9 @@ function App() {
   }
 
   function updateScript(value: string) {
+    const nextAnalysis = analyzeScript(value, options);
     setScript(value);
+    setAnalysis(nextAnalysis);
     setHasDraftChanges(true);
   }
 
@@ -784,31 +803,20 @@ function App() {
     appendLog("script-check", "info", "校检规则已更新", `${rules.filter((rule) => rule.enabled).length} 条启用。`);
   }
 
+  function updateEpisodeSplitRules(rules: EpisodeSplitRule[]) {
+    setEpisodeSplitRules(rules);
+    saveEpisodeSplitRules(rules);
+    appendLog("script-check", "info", "分集规则已更新", `${rules.filter((rule) => rule.enabled).length} 条启用。`);
+  }
+
   function handleRunScriptCheck() {
     appendLog(
       "script-check",
       scriptQuality.issues.some((issue) => issue.level === "错误") ? "error" : scriptQuality.issues.length ? "warning" : "success",
       "剧本校检已执行",
-      `${scriptQuality.stats.lines} 行 / ${scriptQuality.stats.characters.toLocaleString()} 字 / ${scriptQuality.issues.length} 个疑点。`,
+      `${scriptQuality.stats.lines} 行 / ${scriptQuality.stats.characters.toLocaleString()} 字 / ${scriptQuality.issues.length} 个问题。`,
     );
-    showToast(`校检完成：${scriptQuality.issues.length} 个疑点`);
-  }
-
-  function updateEpisodeSplitDraftRule(value: string) {
-    if (!episodeSplitDraft) return;
-    localStorage.setItem("custom-episode-split-rule", value);
-    setEpisodeSplitDraft({
-      ...episodeSplitDraft,
-      customRule: value,
-      preview: splitScriptIntoEpisodes(episodeSplitDraft.sourceText, value),
-    });
-  }
-
-  function confirmEpisodeSplitDraft() {
-    if (!episodeSplitDraft) return;
-    const nextScript = formatEpisodeSplitPreview(episodeSplitDraft.preview);
-    applyScriptToProject(nextScript, true, "合集分集已确认并保存");
-    setEpisodeSplitDraft(null);
+    showToast(`校检完成：${scriptQuality.issues.length} 个问题`);
   }
 
   function appendLog(source: string, level: DevLogLevel, message: string, detail?: string) {
@@ -925,16 +933,6 @@ function App() {
     }
   }
 
-  async function inspectBackendPrompt(promptId: string) {
-    try {
-      const detail = await loadBackendPrompt(promptId);
-      setSelectedBackendPromptContent(detail.content);
-      appendLog("rulepack", "info", "已读取规则包 Prompt", detail.prompt.id);
-    } catch (error) {
-      appendLog("rulepack", "error", "读取规则包 Prompt 失败", error instanceof Error ? error.message : "未知错误");
-    }
-  }
-
   async function clearBackendLogs() {
     try {
       await clearBackendLlmLogs();
@@ -1013,6 +1011,7 @@ function App() {
               projects={projectStore.projects}
               projectRootName={projectRoot?.rootName ?? ""}
               projectRoots={projectRoots}
+              assetReviewBundle={assetReviewBundle}
               options={options}
               onPickRoot={() => void handlePickProjectRoot()}
               onOpenManualRoot={() => setIsRootDialogOpen(true)}
@@ -1025,6 +1024,7 @@ function App() {
               }}
               onSelectProject={handleSelectProject}
               onRequestDeleteProject={setProjectPendingDelete}
+              onUpdateProjectCover={handleUpdateProjectCover}
               onOptionsChange={(nextOptions) =>
                 updateProjectOptions(nextOptions, {
                   setGenreProfile,
@@ -1038,19 +1038,29 @@ function App() {
           )}
           {activePage === "script" && (
             <ScriptWorkspace
+              projectId={activeProject.projectId}
               script={script}
               report={scriptQuality}
               analysis={analysis}
               onScriptChange={updateScript}
-              onFileUpload={handleFileUpload}
               onEpisodeFileUpload={handleEpisodeFileUpload}
               onBatchEpisodeUpload={handleFilesUpload}
               onRunScriptCheck={handleRunScriptCheck}
               rules={scriptQualityRules}
+              episodeSplitRules={episodeSplitRules}
               onOpenRuleConfig={() => setIsScriptRuleDialogOpen(true)}
+              onEpisodeSplitRulesChange={updateEpisodeSplitRules}
+              onConfirmSplitScript={(nextScript) => {
+                applyScriptToProject(nextScript, true, "合集分集已确认并保存");
+                showToast("分集已确认并保存");
+              }}
+              onSaveManualScript={() => {
+                saveCurrentScriptToProject(script, "人工编辑稿已保存");
+                showToast("人工编辑稿已保存");
+              }}
               onApplyCleanedScript={() => {
-                saveCurrentScriptToProject(scriptQuality.cleanedScript, "校检稿已保存");
-                showToast("校检稿已保存");
+                saveCurrentScriptToProject(scriptQuality.cleanedScript, "规则清洗稿已应用并保存");
+                showToast("规则清洗稿已应用并保存");
               }}
             />
           )}
@@ -1079,7 +1089,6 @@ function App() {
               runningBatchLabel={runningStoryBatchLabel}
               onRunNode={handleRunStoryWorkflowNode}
               onRunNodes={(nodeIds, options) => void handleRunStoryWorkflowNodes(nodeIds, "剧本统筹", options)}
-              onRunFullWorkflow={() => void handleRunStoryWorkflowNodes(["story_map", "character_summary", "continuity", "series_summary", "chapter_summary", "episode_summary", "scene_summary", "storyboard_design", "video_prompt"], "分镜全流程")}
               onRefresh={() => void loadStoryWorkflowForProject(activeProject.projectId)}
             />
           )}
@@ -1133,18 +1142,15 @@ function App() {
             <PipelineConfigView
               llmConfig={llmConfig}
               backendHealth={backendHealth}
-              backendRulepacks={backendRulepacks}
               backendPromptLibrary={backendPromptLibrary}
               backendLlmLogs={backendLlmLogs}
               backendLlmLogDetail={backendLlmLogDetail}
-              backendPromptContent={selectedBackendPromptContent}
               backendLlmHasApiKey={backendLlmHasApiKey}
               generalConfig={generalConfig}
               imageConfig={imageConfig}
               imageProviders={backendImageProviders}
               backendImageHasApiKey={backendImageHasApiKey}
               onRefreshBackendStatus={() => void refreshBackendStatus()}
-              onInspectBackendPrompt={(promptId) => void inspectBackendPrompt(promptId)}
               onClearBackendLogs={() => void clearBackendLogs()}
               onInspectBackendLlmLog={(logId) => void inspectBackendLlmLog(logId)}
               onCloseBackendLlmLog={() => setBackendLlmLogDetail(null)}
@@ -1189,16 +1195,10 @@ function App() {
       {isScriptRuleDialogOpen && (
         <ScriptRuleConfigDialog
           rules={scriptQualityRules}
+          episodeSplitRules={episodeSplitRules}
           onChange={updateScriptQualityRules}
+          onEpisodeSplitRulesChange={updateEpisodeSplitRules}
           onClose={() => setIsScriptRuleDialogOpen(false)}
-        />
-      )}
-      {episodeSplitDraft && (
-        <EpisodeSplitPreviewDialog
-          draft={episodeSplitDraft}
-          onRuleChange={updateEpisodeSplitDraftRule}
-          onConfirm={confirmEpisodeSplitDraft}
-          onClose={() => setEpisodeSplitDraft(null)}
         />
       )}
       {projectPendingDelete && (
@@ -1244,6 +1244,24 @@ function useLocalNumber(key: string, defaultValue: number) {
   }, [key, value]);
 
   return [value, setValue] as const;
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error("文件读取失败"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function workflowArtifactWriteMessage(nodeId: StoryWorkflowNodeId, episodeId: string, sceneId: string, chapterId?: string) {
+  if (nodeId === "chapter_summary") return `章节概要已写入 ${chapterId || "当前章节"} 对应的 chapter_summary_xx.json。`;
+  if (nodeId === "episode_summary") return `单集概要已写入 artifacts/story_workflow/episode_summary/${episodeId || "EP01"}.json。`;
+  if (nodeId === "scene_summary" || nodeId === "storyboard_design" || nodeId === "video_prompt") {
+    return `${nodeId} 已写入 artifacts/story_workflow/${nodeId}/${episodeId || "EP01"}_${sceneId || "SC01"}.json。`;
+  }
+  return `${nodeId} 已写入 artifacts/story_workflow/${nodeId}.json。`;
 }
 
 export default App;

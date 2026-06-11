@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { Play, RefreshCcw, Save, Sparkles } from "lucide-react";
+import { Play, RefreshCcw, Save, Sparkles, X } from "lucide-react";
 import { toBackendAssetImageUrl, type AssetReviewBundle } from "../lib/assetApi";
-import { saveStoryWorkflowArtifact, type StoryWorkflowArtifact, type StoryWorkflowNodeId, type StoryWorkflowState } from "../lib/storyWorkflowApi";
+import { loadStoryWorkflowArtifact, saveStoryWorkflowArtifact, type StoryWorkflowArtifact, type StoryWorkflowNodeId, type StoryWorkflowState } from "../lib/storyWorkflowApi";
 import { asArray, asRecord, asTextArray, textValue } from "../lib/valueFormat";
 import { buildVideoGroupsFromBlockPlan, mergeVideoBlockGroups, videoBlockId, videoGroupStatusText } from "../lib/videoGroups";
 import { AssetLibrarySection, AssetThumbGrid, buildAnchoredAssetThumbs, buildVideoAssetThumbs } from "./VideoAssetLibrary";
@@ -40,8 +40,9 @@ export function VideoGenerationView({
   onRunNode: (nodeId: StoryWorkflowNodeId, options?: VideoGenerationRunOptions) => Promise<StoryWorkflowArtifact | null>;
   onRefresh: () => void;
 }) {
-  const artifact = state?.artifacts.video_prompt;
-  const blockPlanArtifact = state?.artifacts.storyboard_design;
+  const [artifact, setArtifact] = useState<StoryWorkflowArtifact | null>(null);
+  const [blockPlanArtifact, setBlockPlanArtifact] = useState<StoryWorkflowArtifact | null>(null);
+  const [isLoadingScopedArtifacts, setIsLoadingScopedArtifacts] = useState(false);
   const promptGroups = artifact?.status === "done" ? asArray(artifact?.output?.groups).map(asRecord) : [];
   const blockGroups = buildVideoGroupsFromBlockPlan(blockPlanArtifact?.output);
   const groups = mergeVideoBlockGroups(blockGroups, promptGroups);
@@ -51,6 +52,14 @@ export function VideoGenerationView({
   const workflowEpisodes = state?.episodes ?? [];
   const activeWorkflowEpisode = workflowEpisodes.find((episode) => episode.episodeId === selectedEpisodeId) ?? workflowEpisodes[0];
   const sceneOptions = activeWorkflowEpisode?.scenes ?? [];
+  const handleEpisodeChange = (episodeId: string) => {
+    onSelectEpisode(episodeId);
+    const nextEpisode = workflowEpisodes.find((episode) => episode.episodeId === episodeId);
+    const nextScenes = nextEpisode?.scenes ?? [];
+    if (nextScenes.length && !nextScenes.some((scene) => scene.sceneId === selectedSceneId)) {
+      onSelectScene(nextScenes[0].sceneId);
+    }
+  };
   const [selectedGroupId, setSelectedGroupId] = useState("");
   const [promptDraft, setPromptDraft] = useState("");
   const [isSavingPrompt, setIsSavingPrompt] = useState(false);
@@ -59,6 +68,7 @@ export function VideoGenerationView({
   const [durationSeconds, setDurationSeconds] = useState(5);
   const [blockStart, setBlockStart] = useState("");
   const [blockEnd, setBlockEnd] = useState("");
+  const [isRangeDialogOpen, setIsRangeDialogOpen] = useState(false);
   const selectedGroup = groups.find((group) => videoBlockId(group) === selectedGroupId) ?? groups[0];
   const selectedPrompt = textValue(selectedGroup?.prompt);
   const promptArtifactError = artifact?.status === "error" ? textValue(artifact.error, "视频提示词生成失败。") : "";
@@ -66,6 +76,37 @@ export function VideoGenerationView({
   const anchoredAssetThumbs = buildAnchoredAssetThumbs(selectedGroup, allAssetThumbs);
   const videoPaths = asTextArray(selectedGroup?.video_paths).concat(textValue(selectedGroup?.video_path) ? [textValue(selectedGroup?.video_path)] : []).filter(Boolean);
   const selectedVideoPath = videoPaths[selectedVideoIndex] ?? "";
+
+  useEffect(() => {
+    if (!projectId || !selectedEpisodeId || !selectedSceneId) {
+      setArtifact(null);
+      setBlockPlanArtifact(null);
+      return;
+    }
+    let cancelled = false;
+    setIsLoadingScopedArtifacts(true);
+    Promise.all([
+      loadStoryWorkflowArtifact(projectId, "storyboard_design", { episodeId: selectedEpisodeId, sceneId: selectedSceneId }),
+      loadStoryWorkflowArtifact(projectId, "video_prompt", { episodeId: selectedEpisodeId, sceneId: selectedSceneId }),
+    ])
+      .then(([blockPlanResult, promptResult]) => {
+        if (cancelled) return;
+        setBlockPlanArtifact(blockPlanResult.artifact);
+        setArtifact(promptResult.artifact);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setBlockPlanArtifact(null);
+          setArtifact(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingScopedArtifacts(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, selectedEpisodeId, selectedSceneId, state?.artifacts.storyboard_design?.updatedAt, state?.artifacts.video_prompt?.updatedAt]);
 
   useEffect(() => {
     if (!groups.length) {
@@ -78,6 +119,13 @@ export function VideoGenerationView({
     if (!groupIds.includes(blockStart)) setBlockStart(firstGroupId);
     if (!groupIds.includes(blockEnd)) setBlockEnd(firstGroupId);
   }, [groupIdsKey, selectedGroupId, blockStart, blockEnd, firstGroupId]);
+
+  useEffect(() => {
+    if (!sceneOptions.length) return;
+    if (!sceneOptions.some((scene) => scene.sceneId === selectedSceneId)) {
+      onSelectScene(sceneOptions[0].sceneId);
+    }
+  }, [sceneOptions, selectedSceneId, onSelectScene]);
 
   useEffect(() => {
     setPromptDraft(selectedPrompt);
@@ -96,7 +144,12 @@ export function VideoGenerationView({
     ));
     setIsSavingPrompt(true);
     try {
-      await saveStoryWorkflowArtifact(projectId, "video_prompt", { output: { ...artifact.output, groups: nextGroups } });
+      const result = await saveStoryWorkflowArtifact(projectId, "video_prompt", {
+        output: { ...artifact.output, groups: nextGroups },
+        episodeId: selectedEpisodeId,
+        sceneId: selectedSceneId,
+      });
+      setArtifact(result.artifact);
       onRefresh();
     } finally {
       setIsSavingPrompt(false);
@@ -106,16 +159,20 @@ export function VideoGenerationView({
   const runCurrentBlockPrompt = async () => {
     const blockId = videoBlockId(selectedGroup);
     if (!blockId) return;
-    await onRunNode("video_prompt", { blockId });
+    const result = await onRunNode("video_prompt", { blockId });
+    if (result) setArtifact(result);
   };
 
   const runScenePrompt = async () => {
-    await onRunNode("video_prompt");
+    const result = await onRunNode("video_prompt");
+    if (result) setArtifact(result);
   };
 
   const runBlockRangePrompt = async () => {
     if (!blockStart && !blockEnd) return;
-    await onRunNode("video_prompt", { blockStart, blockEnd: blockEnd || blockStart });
+    const result = await onRunNode("video_prompt", { blockStart, blockEnd: blockEnd || blockStart });
+    if (result) setArtifact(result);
+    setIsRangeDialogOpen(false);
   };
 
   return (
@@ -123,9 +180,9 @@ export function VideoGenerationView({
       <div className="video-selection-bar">
         <div className="video-select-controls">
           <strong>视频生成</strong>
-          <label>
+          <label className="video-episode-select">
             集
-            <select value={selectedEpisodeId} onChange={(event) => onSelectEpisode(event.target.value)}>
+            <select value={selectedEpisodeId} onChange={(event) => handleEpisodeChange(event.target.value)}>
               {(workflowEpisodes.length ? workflowEpisodes : [{ episodeId: selectedEpisodeId || "EP01", title: "EP01", scenes: [] }]).map((episode) => (
                 <option value={episode.episodeId} key={episode.episodeId}>
                   {episode.episodeId}
@@ -142,6 +199,10 @@ export function VideoGenerationView({
           </div>
         </div>
         <div className="video-select-actions">
+          <button onClick={() => void runScenePrompt()} disabled={Boolean(runningNodeId || runningBatchLabel || !groups.length)}>
+            <Sparkles size={15} />
+            整场提示词
+          </button>
           <button onClick={onRefresh}>
             <RefreshCcw size={16} />
             刷新
@@ -167,7 +228,7 @@ export function VideoGenerationView({
               </button>
             );
           }) : (
-            <div className="empty-state compact">暂无视频块。</div>
+            <div className="empty-state compact">{isLoadingScopedArtifacts ? "读取视频块..." : "暂无视频块。"}</div>
           )}
         </aside>
 
@@ -210,53 +271,35 @@ export function VideoGenerationView({
                       <strong>生成</strong>
                       <span>{textValue(selectedGroup.block_id || selectedGroup.group_id)}</span>
                     </div>
-                    <div className="video-control-row">
-                      <label>
-                        批量
-                        <input type="number" min={1} max={12} value={batchSize} onChange={(event) => setBatchSize(Math.max(1, Number(event.target.value) || 1))} />
-                      </label>
-                      <label>
-                        时长
-                        <input type="number" min={1} max={15} step={0.5} value={durationSeconds} onChange={(event) => setDurationSeconds(Math.max(1, Math.min(15, Number(event.target.value) || 1)))} />
-                      </label>
-                    </div>
-                    <div className="video-prompt-run-row">
-                      <label>
-                        起始块
-                        <select value={blockStart} onChange={(event) => setBlockStart(event.target.value)}>
-                          {groups.map((group, index) => {
-                            const id = videoBlockId(group) || `VB${String(index + 1).padStart(3, "0")}`;
-                            return <option value={id} key={id}>{id}</option>;
-                          })}
-                        </select>
-                      </label>
-                      <label>
-                        结束块
-                        <select value={blockEnd} onChange={(event) => setBlockEnd(event.target.value)}>
-                          {groups.map((group, index) => {
-                            const id = videoBlockId(group) || `VB${String(index + 1).padStart(3, "0")}`;
-                            return <option value={id} key={id}>{id}</option>;
-                          })}
-                        </select>
-                      </label>
-                    </div>
-                    <div className="video-action-row">
-                      <button onClick={() => void runScenePrompt()} disabled={Boolean(runningNodeId || runningBatchLabel || !groups.length)}>
-                        <Sparkles size={15} />
-                        整场提示词
-                      </button>
-                      <button onClick={() => void runCurrentBlockPrompt()} disabled={Boolean(runningNodeId || runningBatchLabel || !selectedGroup)}>
-                        <Sparkles size={15} />
-                        当前块提示词
-                      </button>
-                      <button onClick={() => void runBlockRangePrompt()} disabled={Boolean(runningNodeId || runningBatchLabel || !groups.length)}>
-                        <Sparkles size={15} />
-                        区间提示词
-                      </button>
-                      <button className="primary-button" disabled>
-                        <Play size={15} />
-                        生成视频
-                      </button>
+                    <div className="video-generate-toolbar">
+                      <div className="video-toolbar-left">
+                        <button onClick={() => void runCurrentBlockPrompt()} disabled={Boolean(runningNodeId || runningBatchLabel || !selectedGroup)}>
+                          <Sparkles size={15} />
+                          当前块提示词
+                        </button>
+                        <button onClick={() => setIsRangeDialogOpen(true)} disabled={Boolean(runningNodeId || runningBatchLabel || !groups.length)}>
+                          <Sparkles size={15} />
+                          区间提示词
+                        </button>
+                      </div>
+                      <div className="video-toolbar-right">
+                        <label>
+                          数量
+                          <select value={batchSize} onChange={(event) => setBatchSize(Number(event.target.value) || 1)}>
+                            {Array.from({ length: 12 }, (_, index) => index + 1).map((count) => <option value={count} key={count}>{count}</option>)}
+                          </select>
+                        </label>
+                        <label>
+                          时长
+                          <select value={durationSeconds} onChange={(event) => setDurationSeconds(Number(event.target.value) || 4)}>
+                            {Array.from({ length: 12 }, (_, index) => index + 4).map((seconds) => <option value={seconds} key={seconds}>{seconds}</option>)}
+                          </select>
+                        </label>
+                        <button className="primary-button" disabled>
+                          <Play size={15} />
+                          生成视频
+                        </button>
+                      </div>
                     </div>
                   </div>
 
@@ -293,6 +336,46 @@ export function VideoGenerationView({
           )}
         </section>
       </div>
+
+      {isRangeDialogOpen && (
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="区间提示词">
+          <article className="modal-panel video-range-dialog">
+            <div className="modal-title-row">
+              <strong>区间提示词</strong>
+              <button onClick={() => setIsRangeDialogOpen(false)} aria-label="关闭">
+                <X size={16} />
+              </button>
+            </div>
+            <div className="video-range-grid">
+              <label>
+                起始块
+                <select value={blockStart} onChange={(event) => setBlockStart(event.target.value)}>
+                  {groups.map((group, index) => {
+                    const id = videoBlockId(group) || `VB${String(index + 1).padStart(3, "0")}`;
+                    return <option value={id} key={id}>{id}</option>;
+                  })}
+                </select>
+              </label>
+              <label>
+                结束块
+                <select value={blockEnd} onChange={(event) => setBlockEnd(event.target.value)}>
+                  {groups.map((group, index) => {
+                    const id = videoBlockId(group) || `VB${String(index + 1).padStart(3, "0")}`;
+                    return <option value={id} key={id}>{id}</option>;
+                  })}
+                </select>
+              </label>
+            </div>
+            <div className="modal-actions">
+              <button onClick={() => setIsRangeDialogOpen(false)}>取消</button>
+              <button className="primary-button" onClick={() => void runBlockRangePrompt()} disabled={Boolean(runningNodeId || runningBatchLabel || !groups.length)}>
+                <Sparkles size={15} />
+                生成区间提示词
+              </button>
+            </div>
+          </article>
+        </div>
+      )}
     </section>
   );
 }

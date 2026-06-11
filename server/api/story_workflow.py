@@ -19,9 +19,15 @@ async def get_state(project_id: str):
 
 
 @router.get("/{project_id}/artifacts/{node_id}")
-async def get_artifact(project_id: str, node_id: str, chapterId: str | None = None):
+async def get_artifact(
+    project_id: str,
+    node_id: str,
+    chapterId: str | None = None,
+    episodeId: str | None = None,
+    sceneId: str | None = None,
+):
     try:
-        artifact = get_workflow_artifact(project_id, node_id, chapterId)
+        artifact = get_workflow_artifact(project_id, node_id, chapterId, episodeId, sceneId)
         return {"artifact": artifact.model_dump() if artifact else None}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

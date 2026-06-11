@@ -6,7 +6,12 @@ export interface StoryboardProject {
   name: string;
   folderName?: string;
   rootName?: string;
+  createdAt?: string;
   updatedAt: string;
+  description?: string;
+  owner?: string;
+  status?: string;
+  coverImage?: string;
   script: string;
   options: AnalysisOptions;
   analysis: ScriptAnalysis;
@@ -31,7 +36,12 @@ export function createProject(input: Omit<ProjectSnapshotInput, "projectId">): S
     projectId: createId("PRJ"),
     name: input.name,
     folderName: toSafeFolderName(input.name),
+    createdAt: now,
     updatedAt: now,
+    description: "",
+    owner: "",
+    status: "制作中",
+    coverImage: "",
     script: input.script,
     options: input.options,
     analysis: input.analysis,
@@ -43,7 +53,12 @@ export function updateProjectSnapshot(project: StoryboardProject, input: Project
   return {
     ...project,
     name: input.name,
+    createdAt: project.createdAt || project.updatedAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
+    description: project.description ?? "",
+    owner: project.owner ?? "",
+    status: project.status ?? "制作中",
+    coverImage: project.coverImage ?? "",
     script: input.script,
     options: input.options,
     analysis: input.analysis,

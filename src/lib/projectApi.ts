@@ -66,6 +66,13 @@ export function saveBackendProject(project: StoryboardProject) {
   });
 }
 
+export function uploadBackendProjectCover(projectId: string, filename: string, dataUrl: string) {
+  return backendRequest<{ project: StoryboardProject }>(`/api/projects/${encodeURIComponent(projectId)}/cover`, {
+    method: "POST",
+    body: JSON.stringify({ filename, dataUrl }),
+  });
+}
+
 export function deleteBackendProject(projectId: string) {
   return backendRequest<{ ok: true }>(`/api/projects/${encodeURIComponent(projectId)}`, {
     method: "DELETE",

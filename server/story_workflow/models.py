@@ -84,3 +84,5 @@ class UpdateWorkflowArtifactBody(BaseModel):
     output: dict[str, Any] = Field(default_factory=dict)
     rawText: str = ""
     chapterId: str | None = None
+    episodeId: str | None = None
+    sceneId: str | None = None

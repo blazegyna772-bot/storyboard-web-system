@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, ClipboardList, Edit3, Eye, Image, Package, Play, Plus, RefreshCcw, Save, SlidersHorizontal, Sparkles, Trash2, X } from "lucide-react";
-import { BackendRulepackPanel } from "./BackendRulepackPanel";
+import { CheckCircle2, ClipboardList, Edit3, Eye, Image, Play, Plus, RefreshCcw, Save, SlidersHorizontal, Sparkles, Terminal, Trash2, X } from "lucide-react";
 import { ImageApiHealthPanel, RunHealthPanel } from "./HealthPanels";
 import { getBackendPromptDescription, getBackendPromptTitle } from "../lib/promptStageCopy";
-import { getBackendImageApiKey, getBackendLlmApiKey, type BackendHealth, type BackendSettings, type BackendLlmLog, type BackendPromptLibrary, type BackendPromptTemplateGroup, type BackendPromptVersion, type BackendRulepack, type ImageProviderCatalog } from "../lib/backendStatusApi";
+import { getBackendImageApiKey, getBackendLlmApiKey, type BackendHealth, type BackendSettings, type BackendLlmLog, type BackendPromptLibrary, type BackendPromptTemplateGroup, type BackendPromptVersion, type ImageProviderCatalog } from "../lib/backendStatusApi";
 import { normalizeImageConfig } from "../lib/imageConfig";
 import { normalizeLlmConfig } from "../lib/llmConfig";
 import type { ImageGenerationConfig, LlmExecutorConfig } from "../lib/providerConfig";
@@ -223,18 +222,15 @@ function ImageConfigPanel({
 export function PipelineConfigView({
   llmConfig,
   backendHealth,
-  backendRulepacks,
   backendPromptLibrary,
   backendLlmLogs,
   backendLlmLogDetail,
-  backendPromptContent,
   backendLlmHasApiKey,
   generalConfig,
   imageConfig,
   imageProviders,
   backendImageHasApiKey,
   onRefreshBackendStatus,
-  onInspectBackendPrompt,
   onClearBackendLogs,
   onInspectBackendLlmLog,
   onCloseBackendLlmLog,
@@ -248,18 +244,15 @@ export function PipelineConfigView({
 }: {
   llmConfig: LlmExecutorConfig;
   backendHealth: BackendHealth | null;
-  backendRulepacks: BackendRulepack[];
   backendPromptLibrary: BackendPromptLibrary;
   backendLlmLogs: BackendLlmLog[];
   backendLlmLogDetail: BackendLlmLog | null;
-  backendPromptContent: string;
   backendLlmHasApiKey: boolean;
   generalConfig: BackendSettings["general"];
   imageConfig: ImageGenerationConfig;
   imageProviders: ImageProviderCatalog[];
   backendImageHasApiKey: boolean;
   onRefreshBackendStatus: () => void;
-  onInspectBackendPrompt: (promptId: string) => void;
   onClearBackendLogs: () => void;
   onInspectBackendLlmLog: (logId: string) => void;
   onCloseBackendLlmLog: () => void;
@@ -271,14 +264,16 @@ export function PipelineConfigView({
   onDeletePromptVersion: (versionId: string) => void;
   onActivatePromptVersion: (promptId: string, versionId: string) => void;
 }) {
-  const [activeConfigTab, setActiveConfigTab] = useState<"basic" | "llm" | "image" | "rules" | "prompts">("basic");
+  const [activeConfigTab, setActiveConfigTab] = useState<"basic" | "llm" | "image" | "prompts">("basic");
 
   return (
     <section className="page-stack">
       <div className="page-header work-header">
         <div>
           <h2>模型与流程设置</h2>
-          <p>这里只放运行前必须配置的内容。管线细节放到开发诊断里，不打扰日常操作。</p>
+        </div>
+        <div className="header-actions header-actions-placeholder" aria-hidden="true">
+          <button tabIndex={-1} />
         </div>
       </div>
 
@@ -294,10 +289,6 @@ export function PipelineConfigView({
         <button className={activeConfigTab === "image" ? "active" : ""} onClick={() => setActiveConfigTab("image")} role="tab">
           <Image size={17} />
           生图 API
-        </button>
-        <button className={activeConfigTab === "rules" ? "active" : ""} onClick={() => setActiveConfigTab("rules")} role="tab">
-          <Package size={17} />
-          后端规则
         </button>
         <button className={activeConfigTab === "prompts" ? "active" : ""} onClick={() => setActiveConfigTab("prompts")} role="tab">
           <Edit3 size={17} />
@@ -315,6 +306,14 @@ export function PipelineConfigView({
         <section className="settings-layout" role="tabpanel">
           <LlmConfigForm config={llmConfig} backendHasApiKey={backendLlmHasApiKey} onChange={onLlmConfigChange} />
           <RunHealthPanel config={llmConfig} backendHealth={backendHealth} onRefresh={onRefreshBackendStatus} />
+          <LlmLogPanel
+            logs={backendLlmLogs}
+            logDetail={backendLlmLogDetail}
+            onRefresh={onRefreshBackendStatus}
+            onClearLogs={onClearBackendLogs}
+            onInspectLog={onInspectBackendLlmLog}
+            onCloseLogDetail={onCloseBackendLlmLog}
+          />
         </section>
       )}
 
@@ -328,20 +327,6 @@ export function PipelineConfigView({
           />
           <ImageApiHealthPanel config={imageConfig} providers={imageProviders} backendHasApiKey={backendImageHasApiKey} onRefresh={onRefreshBackendStatus} />
         </section>
-      )}
-
-      {activeConfigTab === "rules" && (
-        <BackendRulepackPanel
-          rulepacks={backendRulepacks}
-          promptContent={backendPromptContent}
-          logs={backendLlmLogs}
-          logDetail={backendLlmLogDetail}
-          onInspectPrompt={onInspectBackendPrompt}
-          onRefresh={onRefreshBackendStatus}
-          onClearLogs={onClearBackendLogs}
-          onInspectLog={onInspectBackendLlmLog}
-          onCloseLogDetail={onCloseBackendLlmLog}
-        />
       )}
 
       {activeConfigTab === "prompts" && (
@@ -566,6 +551,101 @@ function BackendPromptTemplatePanel({
         </section>
       </div>
     </article>
+  );
+}
+
+function LlmLogPanel({
+  logs,
+  logDetail,
+  onRefresh,
+  onClearLogs,
+  onInspectLog,
+  onCloseLogDetail,
+}: {
+  logs: BackendLlmLog[];
+  logDetail: BackendLlmLog | null;
+  onRefresh: () => void;
+  onClearLogs: () => void;
+  onInspectLog: (logId: string) => void;
+  onCloseLogDetail: () => void;
+}) {
+  return (
+    <section className="panel llm-log-panel">
+      <div className="panel-title">
+        <Terminal size={18} />
+        <span>LLM 调用日志</span>
+        <strong>{logs.length} 条</strong>
+        <button onClick={onRefresh}>
+          <RefreshCcw size={15} />
+          刷新
+        </button>
+        <button onClick={onClearLogs}>
+          <Trash2 size={15} />
+          清空
+        </button>
+      </div>
+      <div className="llm-log-list">
+        {logs.map((log) => (
+          <article key={log.id} className={`llm-log-item ${log.level}`}>
+            <div>
+              <strong>{log.label ?? log.stageId ?? "LLM"}</strong>
+              <span>{log.statusCode ? `HTTP ${log.statusCode}` : log.level}</span>
+              {log.durationMs !== undefined && <span>{log.durationMs}ms</span>}
+            </div>
+            <p>{log.message}</p>
+            <small>{log.model} / {log.baseUrl}</small>
+            {log.request && <small>输入：system {log.request.systemChars ?? 0} 字，user {log.request.userChars ?? 0} 字</small>}
+            {log.responseChars !== undefined && <small>输出：{log.responseChars} 字</small>}
+            <button onClick={() => onInspectLog(log.id)}>
+              <Eye size={15} />
+              详情
+            </button>
+          </article>
+        ))}
+        {!logs.length && <div className="empty-state">暂无后端 LLM 调用。</div>}
+      </div>
+      {logDetail && <BackendLlmLogDialog log={logDetail} onClose={onCloseLogDetail} />}
+    </section>
+  );
+}
+
+function BackendLlmLogDialog({ log, onClose }: { log: BackendLlmLog; onClose: () => void }) {
+  const responseText = log.responseText || log.responsePreview || "";
+  return (
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="LLM 调用详情">
+      <article className="modal-panel llm-log-modal">
+        <div className="drawer-header">
+          <div className="panel-title">
+            <Terminal size={18} />
+            <span>{log.label ?? log.stageId ?? "LLM 调用详情"}</span>
+            <strong>{log.durationMs ?? 0}ms</strong>
+          </div>
+          <button onClick={onClose} title="关闭">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="llm-log-meta">
+          <span>{log.model}</span>
+          <span>{log.promptId}</span>
+          <span>{log.statusCode ? `HTTP ${log.statusCode}` : log.level}</span>
+          <span>{log.time}</span>
+        </div>
+        <div className="llm-log-detail-grid">
+          <label>
+            输入 messages
+            <textarea
+              value={(log.messages ?? []).map((message) => `### ${message.role}\n${message.content}`).join("\n\n") || "无完整输入。"}
+              readOnly
+              spellCheck={false}
+            />
+          </label>
+          <label>
+            输出 response
+            <textarea value={responseText || "无完整输出。"} readOnly spellCheck={false} />
+          </label>
+        </div>
+      </article>
+    </div>
   );
 }
 
@@ -914,4 +994,3 @@ function LlmConfigForm({
     </article>
   );
 }
-

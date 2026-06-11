@@ -28,6 +28,8 @@ from server.story_workflow.models import (
 WORKFLOW_DIR = "story_workflow"
 CHAPTER_SUMMARY_DIR = "chapter_summary"
 EPISODE_SCENE_PROMPT_PATH = "story_workflow_episode_summary_integrated/prompt.md"
+EPISODE_SCOPED_NODES = {"episode_summary"}
+SCENE_SCOPED_NODES = {"scene_summary", "storyboard_design", "video_prompt"}
 
 
 NODES: list[WorkflowNode] = [
@@ -141,7 +143,13 @@ def get_workflow_state(project_id: str) -> WorkflowState:
     return WorkflowState(projectId=project_id, nodes=NODES, episodes=build_episode_refs(project.script), artifacts=artifacts)
 
 
-def get_workflow_artifact(project_id: str, node_id: str, chapter_id: str | None = None) -> WorkflowArtifact | None:
+def get_workflow_artifact(
+    project_id: str,
+    node_id: str,
+    chapter_id: str | None = None,
+    episode_id: str | None = None,
+    scene_id: str | None = None,
+) -> WorkflowArtifact | None:
     node = next((item for item in NODES if item.id == node_id), None)
     if not node:
         raise HTTPException(status_code=404, detail="Workflow node not found")
@@ -152,6 +160,8 @@ def get_workflow_artifact(project_id: str, node_id: str, chapter_id: str | None 
         return read_single_chapter_summary_artifact(base, node, chapter_id)
     if node.id == "chapter_summary":
         return None
+    if is_scoped_workflow_node(node.id):
+        return read_scoped_workflow_artifact(base, node, episode_id, scene_id)
     return read_workflow_artifact(base, node)
 
 
@@ -166,10 +176,11 @@ async def run_workflow_node(project_id: str, body: RunWorkflowNodeBody) -> Workf
     base.mkdir(parents=True, exist_ok=True)
 
     state = get_workflow_state(project_id)
-    variables = build_node_variables(base, project.script, state.artifacts, body)
+    context_artifacts = workflow_artifacts_for_context(base, state.artifacts, body.episodeId, body.sceneId)
+    variables = build_node_variables(base, project.script, context_artifacts, body)
     input_summary = summarize_variables_for_log(variables)
     chapter_ref = select_chapter_ref(
-        state.artifacts,
+        context_artifacts,
         split_project_script(project.script),
         variables.get("当前集编号", body.episodeId or "EP01"),
         body.chapterId,
@@ -185,6 +196,8 @@ async def run_workflow_node(project_id: str, body: RunWorkflowNodeBody) -> Workf
     )
     if node.id == "chapter_summary":
         write_chapter_summary_meta(base, node, chapter_ref, running_artifact)
+    elif is_scoped_workflow_node(node.id):
+        write_scoped_workflow_meta(base, running_artifact, variables.get("当前集编号"), variables.get("当前场编号"))
     else:
         write_workflow_meta(base, running_artifact)
 
@@ -256,11 +269,11 @@ async def run_workflow_node(project_id: str, body: RunWorkflowNodeBody) -> Workf
                 output=scene_output,
                 rawText=content,
             )
-            write_workflow_output(base, scene_artifact)
+            write_scoped_workflow_output(base, scene_artifact, variables.get("当前集编号"), variables.get("当前场编号"))
         else:
             if node.id == "video_prompt":
                 parsed = normalize_video_prompt_output(parsed, variables.get("当前分块规划", ""))
-                parsed = merge_video_prompt_output(state.artifacts.get("video_prompt"), parsed, replace_all=is_full_scene_video_prompt(body))
+                parsed = merge_video_prompt_output(context_artifacts.get("video_prompt"), parsed, replace_all=is_full_scene_video_prompt(body))
             artifact = WorkflowArtifact(
                 nodeId=node.id,
                 title=node.title,
@@ -282,11 +295,16 @@ async def run_workflow_node(project_id: str, body: RunWorkflowNodeBody) -> Workf
         )
         if node.id == "chapter_summary":
             write_chapter_summary_meta(base, node, chapter_ref, artifact)
+        elif is_scoped_workflow_node(node.id):
+            write_scoped_workflow_meta(base, artifact, variables.get("当前集编号"), variables.get("当前场编号"))
         else:
             write_workflow_meta(base, artifact)
         raise
 
-    write_workflow_output(base, artifact)
+    if is_scoped_workflow_node(node.id):
+        write_scoped_workflow_output(base, artifact, variables.get("当前集编号"), variables.get("当前场编号"))
+    else:
+        write_workflow_output(base, artifact)
     return artifact
 
 
@@ -365,15 +383,119 @@ def update_workflow_artifact(project_id: str, node_id: str, body: UpdateWorkflow
         artifact.output = normalize_chapter_summary_output(output, chapter_ref)
         write_chapter_summary_output(base, node, chapter_ref, artifact)
         return artifact
+    if is_scoped_workflow_node(node.id):
+        write_scoped_workflow_output(base, artifact, body.episodeId, body.sceneId)
+        return artifact
     write_workflow_output(base, artifact)
     return artifact
+
+
+def is_scoped_workflow_node(node_id: str) -> bool:
+    return node_id in EPISODE_SCOPED_NODES or node_id in SCENE_SCOPED_NODES
+
+
+def normalize_episode_id(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return "EP01"
+    match = re.search(r"([0-9０-９]+)", raw)
+    if match:
+        return f"EP{marker_number(match.group(1)):02d}"
+    match = re.search(r"([一二三四五六七八九十百零〇两]+)", raw)
+    if match:
+        return f"EP{marker_number(match.group(1)):02d}"
+    return re.sub(r"[^A-Za-z0-9_-]+", "_", raw).strip("_") or "EP01"
+
+
+def normalize_scene_id(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return "SC01"
+    match = re.search(r"([0-9０-９]+)", raw)
+    if match:
+        return f"SC{marker_number(match.group(1)):02d}"
+    match = re.search(r"([一二三四五六七八九十百零〇两]+)", raw)
+    if match:
+        return f"SC{marker_number(match.group(1)):02d}"
+    return re.sub(r"[^A-Za-z0-9_-]+", "_", raw).strip("_") or "SC01"
+
+
+def scoped_artifact_dir(base: Path, node_id: str) -> Path:
+    return base / node_id
+
+
+def scoped_artifact_stem(node_id: str, episode_id: str | None, scene_id: str | None) -> str:
+    episode = normalize_episode_id(episode_id)
+    if node_id in EPISODE_SCOPED_NODES:
+        return episode
+    return f"{episode}_{normalize_scene_id(scene_id)}"
+
+
+def scoped_artifact_path(base: Path, node_id: str, episode_id: str | None, scene_id: str | None) -> Path:
+    return scoped_artifact_dir(base, node_id) / f"{scoped_artifact_stem(node_id, episode_id, scene_id)}.json"
+
+
+def scoped_artifact_meta_path(base: Path, node_id: str, episode_id: str | None, scene_id: str | None) -> Path:
+    return scoped_artifact_dir(base, node_id) / f"{scoped_artifact_stem(node_id, episode_id, scene_id)}.meta.json"
+
+
+def read_scoped_workflow_artifact(base: Path, node: WorkflowNode, episode_id: str | None, scene_id: str | None) -> WorkflowArtifact | None:
+    if node.id == "chapter_summary":
+        return None
+    output_path = scoped_artifact_path(base, node.id, episode_id, scene_id)
+    meta_path = scoped_artifact_meta_path(base, node.id, episode_id, scene_id)
+    artifact = read_workflow_artifact_from_paths(node, output_path, meta_path)
+    if artifact:
+        return artifact
+    return read_workflow_artifact(base, node)
+
+
+def write_scoped_workflow_output(base: Path, artifact: WorkflowArtifact, episode_id: str | None, scene_id: str | None) -> None:
+    write_json(scoped_artifact_path(base, artifact.nodeId, episode_id, scene_id), artifact.output)
+    write_scoped_workflow_meta(base, artifact, episode_id, scene_id)
+
+
+def write_scoped_workflow_meta(base: Path, artifact: WorkflowArtifact, episode_id: str | None, scene_id: str | None) -> None:
+    write_json(
+        scoped_artifact_meta_path(base, artifact.nodeId, episode_id, scene_id),
+        {
+            "nodeId": artifact.nodeId,
+            "title": artifact.title,
+            "episodeId": normalize_episode_id(episode_id),
+            "sceneId": normalize_scene_id(scene_id) if artifact.nodeId in SCENE_SCOPED_NODES else "",
+            "status": artifact.status,
+            "updatedAt": artifact.updatedAt,
+            "inputSummary": artifact.inputSummary,
+            "rawText": artifact.rawText,
+            "error": artifact.error,
+        },
+    )
+
+
+def workflow_artifacts_for_context(
+    base: Path,
+    artifacts: dict[str, WorkflowArtifact],
+    episode_id: str | None,
+    scene_id: str | None,
+) -> dict[str, WorkflowArtifact]:
+    context = dict(artifacts)
+    for node_id in EPISODE_SCOPED_NODES | SCENE_SCOPED_NODES:
+        node = require_node(node_id)
+        scoped = read_scoped_workflow_artifact(base, node, episode_id, scene_id)
+        if scoped:
+            context[node_id] = scoped
+    return context
 
 
 def read_workflow_artifact(base: Path, node: WorkflowNode) -> WorkflowArtifact | None:
     if node.id == "chapter_summary":
         return None
-    output_data = read_json(base / f"{node.id}.json", None)
-    meta_data = read_json(base / f"{node.id}.meta.json", {})
+    return read_workflow_artifact_from_paths(node, base / f"{node.id}.json", base / f"{node.id}.meta.json")
+
+
+def read_workflow_artifact_from_paths(node: WorkflowNode, output_path: Path, meta_path: Path) -> WorkflowArtifact | None:
+    output_data = read_json(output_path, None)
+    meta_data = read_json(meta_path, {})
     if not isinstance(meta_data, dict):
         meta_data = {}
     if not isinstance(output_data, dict):

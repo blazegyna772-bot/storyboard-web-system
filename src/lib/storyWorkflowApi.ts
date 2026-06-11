@@ -68,8 +68,16 @@ export function loadStoryWorkflowState(projectId: string) {
   return backendRequest<StoryWorkflowState>(`/api/story-workflow/${encodeURIComponent(projectId)}`);
 }
 
-export function loadStoryWorkflowArtifact(projectId: string, nodeId: StoryWorkflowNodeId, input: { chapterId?: string } = {}) {
-  const query = input.chapterId ? `?chapterId=${encodeURIComponent(input.chapterId)}` : "";
+export function loadStoryWorkflowArtifact(
+  projectId: string,
+  nodeId: StoryWorkflowNodeId,
+  input: { chapterId?: string; episodeId?: string; sceneId?: string } = {},
+) {
+  const params = new URLSearchParams();
+  if (input.chapterId) params.set("chapterId", input.chapterId);
+  if (input.episodeId) params.set("episodeId", input.episodeId);
+  if (input.sceneId) params.set("sceneId", input.sceneId);
+  const query = params.toString() ? `?${params.toString()}` : "";
   return backendRequest<{ artifact: StoryWorkflowArtifact | null }>(`/api/story-workflow/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(nodeId)}${query}`);
 }
 
@@ -87,7 +95,11 @@ export function runStoryWorkflowAll(projectId: string, input: RunStoryWorkflowNo
   });
 }
 
-export function saveStoryWorkflowArtifact(projectId: string, nodeId: StoryWorkflowNodeId, input: { output?: Record<string, unknown>; rawText?: string; chapterId?: string }) {
+export function saveStoryWorkflowArtifact(
+  projectId: string,
+  nodeId: StoryWorkflowNodeId,
+  input: { output?: Record<string, unknown>; rawText?: string; chapterId?: string; episodeId?: string; sceneId?: string },
+) {
   return backendRequest<{ artifact: StoryWorkflowArtifact }>(`/api/story-workflow/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(nodeId)}`, {
     method: "PUT",
     body: JSON.stringify(input),

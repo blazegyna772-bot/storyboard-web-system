@@ -31,7 +31,12 @@ class StoryboardProject(BaseModel):
     name: str
     folderName: str | None = None
     rootName: str | None = None
+    createdAt: str = ""
     updatedAt: str
+    description: str = ""
+    owner: str = ""
+    status: str = "制作中"
+    coverImage: str = ""
     script: str = ""
     options: dict[str, Any] = Field(default_factory=dict)
     analysis: dict[str, Any] = Field(default_factory=dict)
