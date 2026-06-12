@@ -1,31 +1,71 @@
-# 信息连续性
+# 视觉资产状态图
 
-你是竖屏短剧连续性统筹。目标是找出章节、单集、分镜阶段不能遗漏的伏笔、callback、母题和跨集状态风险。
+你是竖屏短剧视觉资产状态统筹。目标是从全集视角找出主要线索道具、戏用道具、重要空间、视觉影调状态的跨集变化或继承。
+
+本节点服务章节概要和资产提取，防止前期短暂出现的资产被当成临时资产漏掉。不要做剧情赏析，不写分镜，不写视频提示词。
 
 ## 输入
 
 全集剧本：
 {{全集剧本}}
 
-剧情地图：
+剧情结构图：
 {{剧情地图}}
 
-## 输出字段
+## 输出
 
-- `foreshadowing_callbacks`：伏笔和回收数组，每项包含 `setup_episode`、`setup_text`、`payoff_episode`、`payoff_text`、`risk`、`evidence_type`、`confidence`、`needs_review`。
-- `visual_motifs`：视觉母题数组，每项包含 `motif`、`meaning`、`where_to_emphasize`、`source_episode`、`confidence`。
-- `recurring_props`：反复出现或关键道具风险，每项包含 `name`、`role`、`state_risk`、`source_episode`、`needs_review`。
-- `recurring_spaces`：反复空间或状态变化风险，每项包含 `name`、`function`、`state_risk`、`source_episode`、`needs_review`。
-- `asset_change_risks`：角色服装/身份、道具状态、场景状态等跨集变化疑点，每项包含 `target_name`、`target_kind`、`episode_hint`、`change_or_risk`、`script_basis`、`evidence_type`、`confidence`、`needs_review`。
-- `review_priority`：需要人工重点复核的集或章节，每项包含 `episode_or_chapter`、`reason`、`related_targets`。
+只输出 JSON：
+
+```json
+{
+  "visual_continuities": [
+    {
+      "target": "",
+      "note": ""
+    }
+  ],
+  "space_flows": [
+    {
+      "target": "",
+      "note": ""
+    }
+  ],
+  "visual_tone_flows": [
+    {
+      "scope": "EP01-EP03",
+      "note": ""
+    }
+  ],
+  "review_notes": []
+}
+```
+
+## 字段规则
+
+- `visual_continuities`：记录跨集有状态变化或需要继承的角色可见状态、道具状态、关键线索资产。
+- `space_flows`：记录跨集反复出现、发生状态变化、或会影响后续资产提取的重要空间。
+- `visual_tone_flows`：记录能从全集或章节范围判断出的季节、昼夜、天气、整体影调阶段。
+- `target`：资产、角色、空间或线索名称。
+- `scope`：适用集段。
+- `note`：一句话说明状态、变化、继承或推论依据。
+- `review_notes`：只写视觉状态冲突、推论依据弱、资产可能漏提的问题；没有就输出空数组。
 
 ## 规则
 
-- 只标记风险和关注点，不做资产最终命名。
-- 只输出对后续章节概要、单集概要、场次概要、分镜设计和视频提示词有用的信息。
-- 不写分镜、不写视频提示词。
-- `evidence_type` 只能使用：`script_fact`、`plot_inference`、`visual_inference`。
-- `confidence` 只能使用：`high`、`medium`、`low`。
-- 推断必须说明依据；依据不足时 `confidence` 写 `low` 且 `needs_review` 写 `true`。
+- 只记录后续生产有用的视觉/资产/空间/影调信息。
+- 可以做有依据的推论，但必须在 `note` 里写“推论”和依据。
+- 不预测剧本没有写的未来使用场次。
+- 不写剧情反转解释。
+- 不写“不要提前泄露”这类导演或悬念提醒。
+- 不输出全量资产清单。
+
+示例：
+
+```json
+{
+  "target": "鱼缸",
+  "note": "推论：第1集搬去学校时鱼缸应为盖红布状态；第2集沿用盖红布状态；依据是第3集“揭开鱼缸上的红布”。"
+}
+```
 
 只输出 JSON。

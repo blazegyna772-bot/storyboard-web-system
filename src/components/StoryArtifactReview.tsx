@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import type { StoryWorkflowNodeId } from "../lib/storyWorkflowApi";
 import { asArray, asRecord, asTextArray, textValue } from "../lib/valueFormat";
-import { videoGroupStatusText } from "../lib/videoGroups";
+import { videoPromptItems } from "../lib/videoGroups";
 
 export function StoryArtifactReview({ nodeId, output }: { nodeId: StoryWorkflowNodeId; output: Record<string, unknown> }) {
   const data = asRecord(output);
@@ -22,6 +22,19 @@ export function StoryArtifactReview({ nodeId, output }: { nodeId: StoryWorkflowN
 }
 
 function ReviewStoryMap({ data }: { data: Record<string, unknown> }) {
+  if (data.series_narrative || data.chapter_map) {
+    return (
+      <div className="story-artifact-review">
+        <ReviewHero title="剧情结构图" subtitle={textValue(data.series_narrative)} />
+        <ReviewSection title="生产章节">
+          <ChapterCardGrid rows={asArray(data.chapter_map).map(asRecord)} />
+        </ReviewSection>
+        <ReviewSection title="审阅提醒">
+          <BulletList items={asTextArray(data.review_notes)} emptyText="无审阅提醒。" />
+        </ReviewSection>
+      </div>
+    );
+  }
   const globalTurns = asArray(data.global_turning_points).map(asRecord);
   const emotionalCurve = globalTurns.length ? globalTurns : asArray(data.emotional_curve).map(asRecord);
   const chapterMap = asArray(data.chapter_map).map(asRecord);
@@ -56,6 +69,18 @@ function ReviewStoryMap({ data }: { data: Record<string, unknown> }) {
 }
 
 function ReviewCharacterSummary({ data }: { data: Record<string, unknown> }) {
+  if (data.character_flows) {
+    return (
+      <div className="story-artifact-review">
+        <ReviewSection title="角色状态图">
+          <GenericObjectList rows={asArray(data.character_flows).map(asRecord)} />
+        </ReviewSection>
+        <ReviewSection title="审阅提醒">
+          <BulletList items={asTextArray(data.review_notes)} emptyText="无审阅提醒。" />
+        </ReviewSection>
+      </div>
+    );
+  }
   const characters = asArray(data.main_characters).map(asRecord);
   const relationships = asArray(data.relationship_map).map(asRecord);
   const risks = asArray(data.character_risks_for_later).map(asRecord);
@@ -96,6 +121,26 @@ function ReviewCharacterSummary({ data }: { data: Record<string, unknown> }) {
 }
 
 function ReviewContinuity({ data }: { data: Record<string, unknown> }) {
+  if (data.visual_continuities || data.space_flows || data.visual_tone_flows) {
+    return (
+      <div className="story-artifact-review">
+        <ReviewSection title="视觉资产状态">
+          <GenericObjectList rows={asArray(data.visual_continuities).map(asRecord)} fallback={asTextArray(data.visual_continuities)} />
+        </ReviewSection>
+        <div className="review-two-col">
+          <ReviewSection title="空间状态">
+            <GenericObjectList rows={asArray(data.space_flows).map(asRecord)} fallback={asTextArray(data.space_flows)} />
+          </ReviewSection>
+          <ReviewSection title="视觉影调">
+            <GenericObjectList rows={asArray(data.visual_tone_flows).map(asRecord)} fallback={asTextArray(data.visual_tone_flows)} />
+          </ReviewSection>
+        </div>
+        <ReviewSection title="审阅提醒">
+          <BulletList items={asTextArray(data.review_notes)} emptyText="无审阅提醒。" />
+        </ReviewSection>
+      </div>
+    );
+  }
   return (
     <div className="story-artifact-review">
       <ReviewSection title="伏笔 / Callback">
@@ -130,6 +175,23 @@ function ReviewContinuity({ data }: { data: Record<string, unknown> }) {
 }
 
 function ReviewSeriesSummary({ data }: { data: Record<string, unknown> }) {
+  if (data.series_flow) {
+    const flow = asRecord(data.series_flow);
+    return (
+      <div className="story-artifact-review">
+        <ReviewHero title="全剧信息流汇总" subtitle={textValue(flow.narrative)} />
+        <ReviewSection title="章节图">
+          <ChapterCardGrid rows={asArray(data.chapter_map).map(asRecord)} />
+        </ReviewSection>
+        <ReviewSection title="全剧信息流">
+          <FlowReview flow={flow} />
+        </ReviewSection>
+        <ReviewSection title="审阅提醒">
+          <BulletList items={asTextArray(data.review_notes)} emptyText="无审阅提醒。" />
+        </ReviewSection>
+      </div>
+    );
+  }
   const summary = asRecord(data.series_bible_summary);
   const characterSummary = asRecord(data.character_summary || data.character_arc_summary);
   const trackItems = asRecord(data.must_track_items);
@@ -172,6 +234,22 @@ function ReviewSeriesSummary({ data }: { data: Record<string, unknown> }) {
 }
 
 function ReviewChapterSummary({ data }: { data: Record<string, unknown> }) {
+  if (data.chapter_flow) {
+    return (
+      <div className="story-artifact-review">
+        <ReviewHero title={`${textValue(data.chapter_id)} · ${textValue(data.episode_range)}`} subtitle={textValue(data.chapter_source_scope)} />
+        <ReviewSection title="章节信息流">
+          <FlowReview flow={asRecord(data.chapter_flow)} />
+        </ReviewSection>
+        <ReviewSection title="每集定位">
+          <GenericObjectList rows={asArray(data.episode_outline).map(asRecord)} />
+        </ReviewSection>
+        <ReviewSection title="审阅提醒">
+          <BulletList items={asTextArray(data.review_notes)} emptyText="无审阅提醒。" />
+        </ReviewSection>
+      </div>
+    );
+  }
   const chapters = asArray(data.chapter_cards).map(asRecord);
   return (
     <div className="story-artifact-review">
@@ -183,6 +261,25 @@ function ReviewChapterSummary({ data }: { data: Record<string, unknown> }) {
 }
 
 function ReviewEpisodeSummary({ data }: { data: Record<string, unknown> }) {
+  if (data.scene_summaries) {
+    return <ReviewSceneSummary data={data} />;
+  }
+  if (data.episode_flow) {
+    return (
+      <div className="story-artifact-review">
+        <ReviewHero title={`${textValue(data.episode_id, "EP")} · 单集信息流`} subtitle={textValue(data.episode_source_scope)} />
+        <ReviewSection title="单集信息流">
+          <FlowReview flow={asRecord(data.episode_flow)} />
+        </ReviewSection>
+        <ReviewSection title="场次定位">
+          <GenericObjectList rows={asArray(data.scene_outline).map(asRecord)} />
+        </ReviewSection>
+        <ReviewSection title="审阅提醒">
+          <BulletList items={asTextArray(data.review_notes)} emptyText="无审阅提醒。" />
+        </ReviewSection>
+      </div>
+    );
+  }
   const emotionShift = asRecord(data.emotion_shift);
   return (
     <div className="story-artifact-review">
@@ -224,20 +321,33 @@ function ReviewSceneSummary({ data }: { data: Record<string, unknown> }) {
                   <p>{textValue(scene.scene_id, `SC${String(index + 1).padStart(2, "0")}`)}</p>
                 </div>
                 <div>
-                  <span>戏剧任务</span>
-                  <p>{textValue(scene.scene_dramatic_task)}</p>
+                  <span>场级信息</span>
+                  <p>{textValue(asRecord(scene.scene_flow).narrative || scene.scene_dramatic_task)}</p>
                 </div>
                 <div>
-                  <span>资产锚定</span>
-                  <AssetBindingSummary value={scene.asset_bindings} />
+                  <span>资产引用</span>
+                  <p>{formatAssetRefs(asRecord(scene.scene_flow).asset_refs || scene.asset_bindings)}</p>
                 </div>
                 <div>
-                  <span>空间关系</span>
-                  <p>{textValue(scene.spatial_relation)}</p>
+                  <span>空间状态</span>
+                  <p>{textValue(asRecord(scene.scene_flow).space_state || scene.spatial_relation)}</p>
                 </div>
               </article>
             ))}
           </div>
+        </ReviewSection>
+      </div>
+    );
+  }
+  if (data.scene_flow) {
+    return (
+      <div className="story-artifact-review">
+        <ReviewHero title={`${textValue(data.episode_id)} / ${textValue(data.scene_id)} 场级信息流`} subtitle={textValue(data.scene_source_scope)} />
+        <ReviewSection title="场级信息流">
+          <FlowReview flow={asRecord(data.scene_flow)} />
+        </ReviewSection>
+        <ReviewSection title="审阅提醒">
+          <BulletList items={asTextArray(data.review_notes)} emptyText="无审阅提醒。" />
         </ReviewSection>
       </div>
     );
@@ -284,10 +394,9 @@ function ReviewSceneSummary({ data }: { data: Record<string, unknown> }) {
 
 function ReviewStoryboardDesign({ data }: { data: Record<string, unknown> }) {
   const blocks = asArray(data.video_blocks).map(asRecord);
-  const sceneBase = asRecord(data.scene_base);
   return (
     <div className="story-artifact-review">
-      <ReviewHero title={`${textValue(data.episode_id)} / ${textValue(data.scene_id)} 分块规划`} subtitle={textValue(sceneBase.scene_name || sceneBase.base_space_state)} />
+      <ReviewHero title={`${textValue(data.episode_id)} / ${textValue(data.scene_id)} 分块规划`} subtitle={`上限 ${textValue(data.block_max_seconds, "15")} 秒`} />
       <ReviewSection title={`视频块（${blocks.length} 块）`}>
         <div className="storyboard-review-table-wrap">
           <table className="storyboard-review-table">
@@ -296,24 +405,20 @@ function ReviewStoryboardDesign({ data }: { data: Record<string, unknown> }) {
                 <th>块号</th>
                 <th>时长</th>
                 <th>剧本原文</th>
-                <th>任务</th>
-                <th>开始状态</th>
                 <th>结束状态</th>
+                <th>块级补充</th>
                 <th>资产</th>
-                <th>临时资产</th>
               </tr>
             </thead>
             <tbody>
               {blocks.map((block, index) => (
                 <tr key={`${textValue(block.block_id, String(index + 1))}-${index}`}>
                   <td className="shot-no">{textValue(block.block_id, `VB${String(index + 1).padStart(3, "0")}`)}</td>
-                  <td>{textValue(block.duration_seconds)}秒</td>
+                  <td>{textValue(block.estimated_seconds || block.duration_seconds)}秒</td>
                   <td>{textValue(block.source_text)}</td>
-                  <td>{textValue(block.block_task)}</td>
-                  <td>{textValue(block.start_state)}</td>
                   <td>{textValue(block.end_state)}</td>
-                  <td><small>{formatAssetRefs(block.asset_refs)}</small></td>
-                  <td><small>{formatTempAssets(block.temp_assets)}</small></td>
+                  <td><small>{formatFlowOverrides(block.flow_overrides)}</small></td>
+                  <td><small>{formatAssetRefs(asRecord(block.flow_overrides).asset_refs || block.asset_refs)}</small></td>
                 </tr>
               ))}
             </tbody>
@@ -325,7 +430,7 @@ function ReviewStoryboardDesign({ data }: { data: Record<string, unknown> }) {
 }
 
 function ReviewVideoPrompt({ data }: { data: Record<string, unknown> }) {
-  const groups = asArray(data.groups).map(asRecord);
+  const groups = videoPromptItems(data);
   return (
     <div className="story-artifact-review">
       <ReviewSection title={`视频提示词（${groups.length} 块）`}>
@@ -334,14 +439,12 @@ function ReviewVideoPrompt({ data }: { data: Record<string, unknown> }) {
             <article className="video-prompt-row" key={`${textValue(group.block_id, String(index + 1))}-${index}`}>
               <div className="video-prompt-index">
                 <strong>{textValue(group.block_id, `VB${String(index + 1).padStart(3, "0")}`)}</strong>
-                <span>{textValue(group.duration_seconds)}秒</span>
-                <small>{videoGroupStatusText(group.status)}</small>
+                <span>提示词</span>
               </div>
               <div className="video-prompt-body">
                 <p>{textValue(group.prompt)}</p>
                 <div className="video-prompt-meta">
-                  <span>参考图：{asTextArray(group.reference_image_paths).length ? asTextArray(group.reference_image_paths).join(" / ") : "无"}</span>
-                  <span>视频：{textValue(group.video_path, "无")}</span>
+                  <span>资产：{formatAssetRefs(group.asset_refs) || "无"}</span>
                 </div>
               </div>
             </article>
@@ -387,21 +490,46 @@ function formatAssetRefs(value: unknown): string {
   return refs.map((ref) => {
     const displayName = textValue(ref.display_name || ref.name, "-");
     const assetId = textValue(ref.asset_id || ref.id);
+    const versionId = textValue(ref.version_id || ref.version_label);
     const usage = textValue(ref.usage);
     const overrideNote = textValue(ref.override_note);
-    return [displayName, assetId, usage, overrideNote].filter(Boolean).join(" · ");
+    return [displayName, assetId, versionId, usage, overrideNote].filter(Boolean).join(" · ");
   }).join(" / ");
 }
 
-function formatTempAssets(value: unknown): string {
-  const items = asArray(value).map(asRecord).filter((record) => Object.keys(record).length);
-  if (!items.length) return asTextArray(value).join(" / ") || "-";
-  return items.map((item) => {
-    const name = textValue(item.temp_name || item.name, "-");
-    const type = textValue(item.type);
-    const reason = textValue(item.reason);
-    return [name, type, reason].filter(Boolean).join(" · ");
+function formatFlowOverrides(value: unknown): string {
+  const flow = asRecord(value);
+  return [
+    textValue(flow.narrative) && `剧情：${textValue(flow.narrative)}`,
+    textValue(flow.character_state) && `角色：${textValue(flow.character_state)}`,
+    textValue(flow.space_state) && `空间：${textValue(flow.space_state)}`,
+    textValue(flow.visual_tone) && `影调：${textValue(flow.visual_tone)}`,
+  ].filter(Boolean).join(" / ") || "-";
+}
+
+function formatContinuity(value: unknown): string {
+  const rows = asArray(value).map(asRecord).filter((record) => Object.keys(record).length);
+  if (!rows.length) return asTextArray(value).join(" / ");
+  return rows.map((row) => {
+    const target = textValue(row.target || row.name);
+    const note = textValue(row.note || row.risk || row.reason);
+    return [target, note].filter(Boolean).join("：");
   }).join(" / ");
+}
+
+function FlowReview({ flow }: { flow: Record<string, unknown> }) {
+  return (
+    <KeyValueReview
+      rows={[
+        ["剧情节奏", flow.narrative],
+        ["角色状态", flow.character_state],
+        ["资产引用", formatAssetRefs(flow.asset_refs)],
+        ["空间状态", flow.space_state],
+        ["视觉影调", flow.visual_tone],
+        ["连续性", formatContinuity(flow.continuity)],
+      ]}
+    />
+  );
 }
 
 function GenericArtifactReview({ data }: { data: Record<string, unknown> }) {
@@ -466,9 +594,10 @@ function ChapterCardGrid({ rows, showEpisodes = false }: { rows: Record<string, 
               <strong>{textValue(row.chapter_name || row.chapter_id, `章节 ${index + 1}`)}</strong>
               <span>{textValue(row.episode_range)}</span>
             </div>
-            <p>{textValue(row.chapter_function)}</p>
+            <p>{textValue(row.chapter_note || row.chapter_function)}</p>
             <KeyValueReview
               rows={[
+                ["位置", row.chapter_position],
                 ["情绪", row.emotional_tone],
                 ["母题/伏笔", row.required_motifs_or_foreshadowing],
                 ["结束钩子", row.chapter_end_hook || row.end_hook],

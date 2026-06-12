@@ -1,42 +1,52 @@
-# 剧情地图
+# 剧情结构图
 
-你是竖屏短剧叙事统筹。只处理全剧剧情地图、章节划分和关键转折，不处理资产定稿、不写分镜、不写视频提示词。
+你是竖屏短剧生产统筹。目标是把全集剧本切成适合后续章节概要和分章资产提取的生产章节。
+
+本节点只做剧情结构和分章，不做资产抽取，不写分镜，不写视频提示词。
 
 ## 输入
 
 全集剧本：
 {{全集剧本}}
 
-## 输出目标
+## 输出
 
-提取全剧剧情地图，给章节概要使用，并为后续资产抽取、分镜阶段提供全局参照。
+只输出 JSON：
 
-## 输出字段
+```json
+{
+  "series_narrative": "",
+  "chapter_map": [
+    {
+      "chapter_id": "chapter_01",
+      "episode_range": "EP01-EP04",
+      "chapter_position": "opening",
+      "chapter_note": ""
+    }
+  ],
+  "review_notes": []
+}
+```
 
-- `logline`：一句话梗概，50 字以内。
-- `genre_tone_tags`：类型/基调标签数组。
-- `mainline`：全剧剧情大纲，200-300 字，覆盖主要章节推进，不要只写一句抽象主线。
-- `global_turning_points`：5-8 个关键转折点，每项包含：
-  - `chapter_id`
-  - `episode_hint`
-  - `event`
-  - `emotion_shift`
-  - `narrative_function`
-- `chapter_map`：6-8 个章节节点，每项包含：
-  - `chapter_id`
-  - `episode_range`
-  - `chapter_function`
-  - `primary_spaces`
-  - `story_world_shift`
-  - `end_hook`
+## 字段规则
 
-## 规则
+- `series_narrative`：全剧剧情结构归纳，200 字以内，只写主要阶段推进。
+- `chapter_map`：生产章节列表。
+- `chapter_id`：使用 `chapter_01`、`chapter_02` 这种格式。
+- `episode_range`：章节覆盖的集数范围。
+- `chapter_position`：只能使用 `opening`、`middle`、`ending`。
+- `chapter_note`：一句话说明本章的剧情阶段、主场域或主要人物群体。
+- `review_notes`：只写分章不确定、集数缺失、章节边界可能需要人工确认的问题；没有就输出空数组。
 
-- 只写你能从剧本整体判断出的结构信息。
+## 分章规则
+
+- 分章首先是生产分片，不是文学章节。
+- 每章尽量控制在 10000-20000 字。
+- 明显剧情阶段变化、主场域变化、主要人物群体变化，可以作为章节边界。
+- 如果没有明显变化，按字数和集数自然切分。
+- 不要为了戏剧理论强行细分章节。
 - 不输出每集标题。
 - 不输出资产清单。
-- `primary_spaces` 只写章节天然涉及的主要地点/空间，不做资产命名。
-- `story_world_shift` 只说明剧情地图从哪里推进到哪里，例如“乡村/后山 -> 宸王府”。
-- 不编造剧本没有支撑的情节。
+- 不新增剧本没有支撑的剧情。
 
 只输出 JSON。

@@ -1,5 +1,5 @@
 import { StrictMode, useEffect, useMemo, useState } from "react";
-import { createRoot } from "react-dom/client";
+import { createRoot, type Root } from "react-dom/client";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -107,6 +107,7 @@ import {
 import {
   createProject,
   createDefaultProjectName,
+  normalizeProject,
   normalizeProjectAnalysis,
   toSafeFolderName,
   updateProjectSnapshot,
@@ -252,17 +253,18 @@ function App() {
   }, [backendImageTasks]);
 
   function applyProject(project: StoryboardProject) {
-    const nextAnalysis = normalizeProjectAnalysis(project.script, project.analysis, project.options);
-    setScript(project.script);
-    setGenreProfile(project.options.genreProfile);
-    setDirectorProfile(project.options.directorProfile);
-    setTargetShotSeconds(project.options.targetShotSeconds);
-    setAspectRatio(project.options.aspectRatio);
-    setContentType(project.options.contentType);
+    const normalizedProject = normalizeProject(project, fallbackOptions);
+    const nextAnalysis = normalizedProject.analysis;
+    setScript(normalizedProject.script);
+    setGenreProfile(normalizedProject.options.genreProfile);
+    setDirectorProfile(normalizedProject.options.directorProfile);
+    setTargetShotSeconds(normalizedProject.options.targetShotSeconds);
+    setAspectRatio(normalizedProject.options.aspectRatio);
+    setContentType(normalizedProject.options.contentType);
     setAnalysis(nextAnalysis);
     setSelectedEpisodeId(nextAnalysis.episodes[0]?.episodeId ?? "EP01");
     setHasDraftChanges(false);
-    appendLog("project", "info", `已切换到 ${project.name}`, project.folderName ?? toSafeFolderName(project.name));
+    appendLog("project", "info", `已切换到 ${normalizedProject.name}`, normalizedProject.folderName ?? toSafeFolderName(normalizedProject.name));
   }
 
   function updateActiveProject(mutator: (project: StoryboardProject) => StoryboardProject) {
@@ -353,7 +355,8 @@ function App() {
       setProjectRoot(activeRoot);
       if (!activeRoot) return;
       const { projects } = await listBackendProjects();
-      if (!projects.length) {
+      const normalizedProjects = projects.map((project) => normalizeProject(project, fallbackOptions));
+      if (!normalizedProjects.length) {
         setProjectStore({ activeProjectId: "", projects: [] });
         setScript("");
         setAnalysis(analyzeScript("", fallbackOptions));
@@ -361,11 +364,11 @@ function App() {
         return;
       }
       setProjectStore({
-        activeProjectId: projects[0].projectId,
-        projects,
+        activeProjectId: normalizedProjects[0].projectId,
+        projects: normalizedProjects,
       });
-      await loadAndApplyProject(projects[0], activeRoot);
-      appendLog("project-root", "success", "项目列表已刷新", `${activeRoot.rootName} / ${projects.length} 个项目。`);
+      await loadAndApplyProject(normalizedProjects[0], activeRoot);
+      appendLog("project-root", "success", "项目列表已刷新", `${activeRoot.rootName} / ${normalizedProjects.length} 个项目。`);
     } catch (error) {
       const message = error instanceof Error ? error.message : "读取项目根目录失败。";
       appendLog("project-root", "error", "读取项目根目录失败", message);
@@ -405,7 +408,7 @@ function App() {
 
   async function handleCreateProject() {
     const name = newProjectName.trim() || createDefaultProjectName(projectStore.projects.length);
-    const project = (await createBackendProject(name, fallbackOptions)).project;
+    const project = normalizeProject((await createBackendProject(name, fallbackOptions)).project, fallbackOptions);
     setProjectStore((current) => ({
       activeProjectId: project.projectId,
       projects: [project, ...current.projects],
@@ -451,7 +454,7 @@ function App() {
       void loadStoryWorkflowForProject(project.projectId);
       return;
     }
-    const loadedProject = (await loadBackendProject(project.projectId)).project;
+    const loadedProject = normalizeProject((await loadBackendProject(project.projectId)).project, fallbackOptions);
     setProjectStore((current) => ({
       ...current,
       projects: current.projects.map((item) => (item.projectId === loadedProject.projectId ? loadedProject : item)),
@@ -602,8 +605,8 @@ function App() {
     try {
       const result = await runStoryWorkflowNode(activeProject.projectId, {
         nodeId,
-        episodeId: selectedEpisodeId,
-        sceneId: selectedWorkflowSceneId,
+        episodeId: options.episodeId || selectedEpisodeId,
+        sceneId: options.sceneId || selectedWorkflowSceneId,
         chapterId: options.chapterId,
         blockId: options.blockId,
         blockStart: options.blockStart,
@@ -628,7 +631,7 @@ function App() {
         showToast(`${nodeTitle} 执行失败`);
         return result.artifact;
       }
-      appendLog("story-workflow", "success", `${nodeTitle} 执行完成`, workflowArtifactWriteMessage(nodeId, selectedEpisodeId, selectedWorkflowSceneId, options.chapterId));
+      appendLog("story-workflow", "success", `${nodeTitle} 执行完成`, workflowArtifactWriteMessage(nodeId, options.episodeId || selectedEpisodeId, options.sceneId || selectedWorkflowSceneId, options.chapterId));
       showToast(`${nodeTitle} 执行完成`);
       return result.artifact;
     } catch (error) {
@@ -651,8 +654,8 @@ function App() {
       const result = await runStoryWorkflowAll(activeProject.projectId, {
         nodeId: nodeIds[0],
         nodeIds,
-        episodeId: selectedEpisodeId,
-        sceneId: selectedWorkflowSceneId,
+        episodeId: options.episodeId || selectedEpisodeId,
+        sceneId: options.sceneId || selectedWorkflowSceneId,
         chapterId: options.chapterId,
         chapterIds: options.chapterIds,
         blockId: options.blockId,
@@ -675,6 +678,46 @@ function App() {
     } catch (error) {
       appendLog("story-workflow", "error", `${label} 执行失败`, error instanceof Error ? error.message : "未知错误");
       showToast(`${label} 执行失败`);
+      void loadStoryWorkflowForProject(activeProject.projectId);
+      void refreshBackendStatus();
+    } finally {
+      setRunningStoryBatchLabel("");
+    }
+  }
+
+  async function handleRunStoryWorkflowEpisodeScenes(nodeIds: StoryWorkflowNodeId[], sceneIds: string[], options: StoryWorkflowRunOptions = {}) {
+    const uniqueSceneIds = sceneIds.filter((sceneId, index) => sceneId && sceneIds.indexOf(sceneId) === index);
+    if (!activeProject.projectId || runningStoryNodeId || runningStoryBatchLabel || !uniqueSceneIds.length) return;
+    const episodeId = options.episodeId || selectedEpisodeId;
+    setRunningStoryBatchLabel("本集全部场次");
+    appendLog("story-workflow", "info", "开始执行本集全部场次", `${episodeId}：${uniqueSceneIds.join(" -> ")}`);
+    try {
+      let artifactCount = 0;
+      for (const sceneId of uniqueSceneIds) {
+        const result = await runStoryWorkflowAll(activeProject.projectId, {
+          nodeId: nodeIds[0],
+          nodeIds,
+          episodeId,
+          sceneId,
+          executionMode: options.executionMode,
+        });
+        artifactCount += result.artifacts.length;
+        setStoryWorkflow((current) => {
+          if (!current) return current;
+          const nextArtifacts = { ...current.artifacts };
+          for (const artifact of result.artifacts) {
+            if (artifact.nodeId !== "chapter_summary") nextArtifacts[artifact.nodeId] = artifact;
+          }
+          return { ...current, artifacts: nextArtifacts };
+        });
+      }
+      void refreshBackendStatus();
+      void loadStoryWorkflowForProject(activeProject.projectId);
+      appendLog("story-workflow", "success", "本集全部场次执行完成", `${uniqueSceneIds.length} 个场次，${artifactCount} 个节点产物已按集场保存。`);
+      showToast("本集全部场次执行完成");
+    } catch (error) {
+      appendLog("story-workflow", "error", "本集全部场次执行失败", error instanceof Error ? error.message : "未知错误");
+      showToast("本集全部场次执行失败");
       void loadStoryWorkflowForProject(activeProject.projectId);
       void refreshBackendStatus();
     } finally {
@@ -1099,14 +1142,15 @@ function App() {
               episodes={analysis.episodes}
               selectedEpisodeId={selectedEpisodeId}
               onSelectEpisode={setSelectedEpisodeId}
-        selectedSceneId={selectedWorkflowSceneId}
-        onSelectScene={setSelectedWorkflowSceneId}
-        executionMode={storyboardExecutionMode}
-        onExecutionModeChange={setStoryboardExecutionMode}
-        runningNodeId={runningStoryNodeId}
-        runningBatchLabel={runningStoryBatchLabel}
-        onRunNode={handleRunStoryWorkflowNode}
+              selectedSceneId={selectedWorkflowSceneId}
+              onSelectScene={setSelectedWorkflowSceneId}
+              executionMode={storyboardExecutionMode}
+              onExecutionModeChange={setStoryboardExecutionMode}
+              runningNodeId={runningStoryNodeId}
+              runningBatchLabel={runningStoryBatchLabel}
+              onRunNode={handleRunStoryWorkflowNode}
               onRunNodes={(nodeIds, options) => void handleRunStoryWorkflowNodes(nodeIds, "分镜统筹", options)}
+              onRunEpisodeScenes={(nodeIds, sceneIds, options) => void handleRunStoryWorkflowEpisodeScenes(nodeIds, sceneIds, options)}
               onRefresh={() => void loadStoryWorkflowForProject(activeProject.projectId)}
             />
           )}
@@ -1266,7 +1310,11 @@ function workflowArtifactWriteMessage(nodeId: StoryWorkflowNodeId, episodeId: st
 
 export default App;
 
-createRoot(document.getElementById("root")!).render(
+const rootElement = document.getElementById("root")!;
+const globalRootKey = "__scriptStoryboardRoot";
+const root = ((window as unknown as Record<string, Root | undefined>)[globalRootKey] ??= createRoot(rootElement));
+
+root.render(
   <StrictMode>
     <App />
   </StrictMode>,

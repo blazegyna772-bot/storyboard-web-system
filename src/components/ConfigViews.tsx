@@ -265,6 +265,10 @@ export function PipelineConfigView({
   onActivatePromptVersion: (promptId: string, versionId: string) => void;
 }) {
   const [activeConfigTab, setActiveConfigTab] = useState<"basic" | "llm" | "image" | "prompts">("basic");
+  function selectConfigTab(tab: "basic" | "llm" | "image" | "prompts") {
+    if (tab === "llm") onCloseBackendLlmLog();
+    setActiveConfigTab(tab);
+  }
 
   return (
     <section className="page-stack">
@@ -278,19 +282,19 @@ export function PipelineConfigView({
       </div>
 
       <div className="config-tab-bar" role="tablist" aria-label="流程配置分类">
-        <button className={activeConfigTab === "basic" ? "active" : ""} onClick={() => setActiveConfigTab("basic")} role="tab">
+        <button className={activeConfigTab === "basic" ? "active" : ""} onClick={() => selectConfigTab("basic")} role="tab">
           <ClipboardList size={17} />
           基本配置
         </button>
-        <button className={activeConfigTab === "llm" ? "active" : ""} onClick={() => setActiveConfigTab("llm")} role="tab">
+        <button className={activeConfigTab === "llm" ? "active" : ""} onClick={() => selectConfigTab("llm")} role="tab">
           <Sparkles size={17} />
           文本 API
         </button>
-        <button className={activeConfigTab === "image" ? "active" : ""} onClick={() => setActiveConfigTab("image")} role="tab">
+        <button className={activeConfigTab === "image" ? "active" : ""} onClick={() => selectConfigTab("image")} role="tab">
           <Image size={17} />
           生图 API
         </button>
-        <button className={activeConfigTab === "prompts" ? "active" : ""} onClick={() => setActiveConfigTab("prompts")} role="tab">
+        <button className={activeConfigTab === "prompts" ? "active" : ""} onClick={() => selectConfigTab("prompts")} role="tab">
           <Edit3 size={17} />
           提示词模板
         </button>

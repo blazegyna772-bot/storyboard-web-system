@@ -35,39 +35,39 @@ SCENE_SCOPED_NODES = {"scene_summary", "storyboard_design", "video_prompt"}
 NODES: list[WorkflowNode] = [
     WorkflowNode(
         id="story_map",
-        title="剧情地图",
+        title="剧情结构图",
         page="planning",
         scope="全剧",
         inputSummary="全集剧本",
-        outputSummary="剧情大纲、类型基调、章节地图、关键转折",
+        outputSummary="生产章节划分、全剧剧情结构",
         promptPath="story_workflow_story_map/prompt.md",
     ),
     WorkflowNode(
         id="character_summary",
-        title="角色概要",
+        title="角色状态图",
         page="planning",
         scope="全剧",
-        inputSummary="全集剧本 + 剧情地图",
-        outputSummary="角色功能、身份视觉阶段、关系变化、认知状态",
+        inputSummary="全集剧本 + 剧情结构图",
+        outputSummary="角色身份、处境、关系、认知等剧情状态变化",
         promptPath="story_workflow_character_summary/prompt.md",
         dependsOn=["story_map"],
     ),
     WorkflowNode(
         id="continuity",
-        title="信息连续性",
+        title="视觉资产状态图",
         page="planning",
         scope="全剧",
-        inputSummary="全集剧本 + 剧情地图",
-        outputSummary="伏笔 callback、视觉母题、关键道具、反复空间、资产变化风险",
+        inputSummary="全集剧本 + 剧情结构图",
+        outputSummary="线索道具、重要空间、视觉影调的跨集状态变化",
         promptPath="story_workflow_continuity/prompt.md",
         dependsOn=["story_map"],
     ),
     WorkflowNode(
         id="series_summary",
-        title="全集概要",
+        title="全剧信息流汇总",
         page="planning",
         scope="全剧",
-        inputSummary="剧情地图 + 角色概要 + 信息连续性",
+        inputSummary="剧情结构图 + 角色状态图 + 视觉资产状态图",
         outputSummary="程序机械合并上游全剧产物，不理解剧情",
         promptPath="story_workflow_series_summary/prompt.md",
         dependsOn=["story_map", "character_summary", "continuity"],
@@ -77,8 +77,8 @@ NODES: list[WorkflowNode] = [
         title="章节概要",
         page="planning",
         scope="章节",
-        inputSummary="当前章节剧本 + 全集概要",
-        outputSummary="章节功能、情绪主调、母题/伏笔、章节钩子、每集标题和一句话梗概",
+        inputSummary="当前章节剧本 + 全剧信息流汇总",
+        outputSummary="章节级信息流、集级定位、跨集视觉连续性",
         promptPath="story_workflow_chapter_summary/prompt.md",
         dependsOn=["series_summary"],
     ),
@@ -87,8 +87,8 @@ NODES: list[WorkflowNode] = [
         title="单集概要",
         page="storyboard",
         scope="单集",
-        inputSummary="本集剧本 + 当前章节概要 + 前后集概要 + 必要连续性风险",
-        outputSummary="本集任务、情绪标签、钩子类型、镜头放大细节、节奏和承接",
+        inputSummary="本集剧本 + 当前章节概要 + 前后集概要",
+        outputSummary="单集信息流；集场一体模式下输出场次概要",
         promptPath="story_workflow_episode_summary/prompt.md",
         dependsOn=["chapter_summary"],
     ),
@@ -98,7 +98,7 @@ NODES: list[WorkflowNode] = [
         page="storyboard",
         scope="场次",
         inputSummary="本场剧本 + 当前单集概要 + 前后场摘要",
-        outputSummary="戏剧任务、角色进入状态、潜台词、强调信息、空间关系、节奏和悬念",
+        outputSummary="场级信息流快照",
         promptPath="story_workflow_scene_summary/prompt.md",
         dependsOn=["episode_summary"],
     ),
@@ -107,8 +107,8 @@ NODES: list[WorkflowNode] = [
         title="分块规划",
         page="storyboard",
         scope="场次",
-        inputSummary="本场剧本 + 当前单集概要 + 可选当前场次概要 + 资产索引",
-        outputSummary="场级底座、15秒生成块、剧本原文、资产锚定、空间状态",
+        inputSummary="本场剧本 + 当前场次概要 + 资产索引",
+        outputSummary="视频块、剧本真源、估时、结束状态、块级补充信息",
         promptPath="story_workflow_storyboard_design/prompt.md",
         dependsOn=["episode_summary"],
     ),
@@ -117,8 +117,8 @@ NODES: list[WorkflowNode] = [
         title="视频提示词",
         page="video",
         scope="生成块",
-        inputSummary="当前生成块 + 场级底座 + 块资产锚定",
-        outputSummary="视频块提示词、参考图路径、时长、状态、视频路径",
+        inputSummary="当前生成块 + 场级信息流 + 块级补充",
+        outputSummary="视频块提示词和资产引用",
         promptPath="story_workflow_video_prompt/prompt.md",
         dependsOn=["storyboard_design"],
     ),
@@ -628,19 +628,44 @@ def first_chapter_id(output: dict[str, Any]) -> str:
 
 def normalize_chapter_summary_output(parsed: dict[str, Any], chapter_ref: dict[str, Any]) -> dict[str, Any]:
     chapter_id = normalize_chapter_id(chapter_ref.get("chapter_id"))
+    if parsed.get("chapter_flow") or parsed.get("episode_outline"):
+        output = {key: value for key, value in parsed.items() if key != "chapter_review_risks"}
+        output["chapter_id"] = chapter_id
+        output.setdefault("chapter_source_scope", text_value(chapter_ref.get("chapter_name")))
+        output.setdefault("episode_range", chapter_ref.get("episode_range") or "")
+        output.setdefault("chapter_flow", {})
+        output.setdefault("episode_outline", [])
+        output.setdefault("review_notes", [])
+        return output
+
     incoming_cards = as_list(parsed.get("chapter_cards"))
-    if not incoming_cards and parsed:
-        incoming_cards = [parsed]
-    cards: list[dict[str, Any]] = []
-    for item in incoming_cards:
-        card = as_dict(item)
-        if not card:
+    card = as_dict(incoming_cards[0]) if incoming_cards else parsed
+    chapter_flow = {
+        "narrative": text_value(card.get("chapter_function") or card.get("chapter_note")),
+        "character_state": "",
+        "asset_refs": [],
+        "space_state": "",
+        "visual_tone": text_value(card.get("emotional_tone")),
+        "continuity": normalize_continuity_items(card.get("required_motifs_or_foreshadowing")),
+    }
+    episode_outline = []
+    for item in as_list(card.get("episode_titles")):
+        episode = as_dict(item)
+        if not episode:
             continue
-        card["chapter_id"] = chapter_id
-        card.setdefault("episode_range", chapter_ref.get("episode_range") or "")
-        cards.append(card)
-    output = {key: value for key, value in parsed.items() if key != "chapter_review_risks"}
-    return {**output, "chapter_cards": cards}
+        episode_outline.append({
+            "episode_id": text_value(episode.get("episode_id")),
+            "episode_position": "",
+            "episode_note": text_value(episode.get("one_line_synopsis") or episode.get("title")),
+        })
+    return {
+        "chapter_id": chapter_id,
+        "chapter_source_scope": text_value(card.get("chapter_name") or chapter_ref.get("chapter_name")),
+        "episode_range": text_value(card.get("episode_range") or chapter_ref.get("episode_range")),
+        "chapter_flow": chapter_flow,
+        "episode_outline": episode_outline,
+        "review_notes": as_list(parsed.get("review_notes") or parsed.get("chapter_review_risks")),
+    }
 
 
 def read_chapter_summary_meta(base: Path, chapter_id: str) -> dict[str, Any]:
@@ -691,6 +716,8 @@ def read_single_chapter_summary_artifact(base: Path, node: WorkflowNode, chapter
 
 
 def chapter_card_episode_range(output: dict[str, Any]) -> str:
+    if output.get("episode_range"):
+        return str(output.get("episode_range") or "")
     card = as_dict(next(iter(as_list(output.get("chapter_cards"))), {}))
     return str(card.get("episode_range") or "")
 
@@ -699,11 +726,23 @@ def build_series_mechanical_summary(artifacts: dict[str, WorkflowArtifact]) -> d
     story_map = artifacts.get("story_map").output if artifacts.get("story_map") else {}
     character_summary = artifacts.get("character_summary").output if artifacts.get("character_summary") else {}
     continuity = artifacts.get("continuity").output if artifacts.get("continuity") else {}
+    story_map = story_map if isinstance(story_map, dict) else {}
+    character_summary = character_summary if isinstance(character_summary, dict) else {}
+    continuity = continuity if isinstance(continuity, dict) else {}
+    review_notes: list[Any] = []
+    for output in (story_map, character_summary, continuity):
+        review_notes.extend(as_list(output.get("review_notes")))
     return {
-        "series_bible_summary": story_map if isinstance(story_map, dict) else {},
-        "chapter_map": story_map.get("chapter_map", []) if isinstance(story_map, dict) else [],
-        "character_summary": character_summary if isinstance(character_summary, dict) else {},
-        "must_track_items": continuity if isinstance(continuity, dict) else {},
+        "series_flow": {
+            "narrative": text_value(story_map.get("series_narrative") or story_map.get("mainline")),
+            "character_state": character_summary.get("character_flows") or character_summary.get("main_characters") or "",
+            "asset_refs": [],
+            "space_state": continuity.get("space_flows") or continuity.get("recurring_spaces") or "",
+            "visual_tone": continuity.get("visual_tone_flows") or continuity.get("visual_motifs") or "",
+            "continuity": continuity.get("visual_continuities") or continuity.get("asset_change_risks") or [],
+        },
+        "chapter_map": story_map.get("chapter_map", []),
+        "review_notes": review_notes,
     }
 
 
@@ -718,8 +757,14 @@ def normalize_episode_scene_output(parsed: dict[str, Any], variables: dict[str, 
     episode_id = variables.get("当前集编号") or "EP01"
     episode_output = as_dict(parsed.get("episode_summary"))
     if not episode_output:
-        episode_output = {key: value for key, value in parsed.items() if key not in {"scene_summaries", "scene_summary"}}
+        episode_output = {
+            key: value
+            for key, value in parsed.items()
+            if key not in {"scene_summaries", "scene_summary"}
+        }
     episode_output["episode_id"] = str(episode_output.get("episode_id") or episode_id)
+    episode_output.setdefault("episode_position_note", "")
+    episode_output.setdefault("review_notes", [])
 
     incoming_scenes = as_list(parsed.get("scene_summaries"))
     if not incoming_scenes and parsed.get("scene_summary"):
@@ -731,8 +776,76 @@ def normalize_episode_scene_output(parsed: dict[str, Any], variables: dict[str, 
             continue
         scene["episode_id"] = str(scene.get("episode_id") or episode_id)
         scene["scene_id"] = str(scene.get("scene_id") or f"SC{index:02d}")
-        scene_summaries.append(scene)
+        scene_summaries.append(normalize_scene_summary_item(scene))
     return episode_output, {"episode_id": episode_id, "scene_summaries": scene_summaries}
+
+
+def normalize_scene_summary_item(scene: dict[str, Any]) -> dict[str, Any]:
+    if scene.get("scene_flow"):
+        scene.setdefault("review_notes", [])
+        return scene
+    asset_bindings = as_dict(scene.get("asset_bindings"))
+    asset_refs: list[Any] = []
+    for key in ("characters", "scenes", "props"):
+        asset_refs.extend(as_list(asset_bindings.get(key)))
+    scene_flow = {
+        "narrative": text_value(scene.get("scene_dramatic_task") or scene.get("must_emphasize_information")),
+        "character_state": scene.get("character_entry_states") or "",
+        "asset_refs": normalize_asset_refs(asset_refs),
+        "space_state": text_value(scene.get("spatial_relation")),
+        "visual_tone": text_value(scene.get("rhythm_atmosphere")),
+        "continuity": normalize_continuity_items(scene.get("continuity_risks") or scene.get("carry_over_or_hook")),
+    }
+    return {
+        "episode_id": text_value(scene.get("episode_id")),
+        "scene_id": text_value(scene.get("scene_id")),
+        "scene_position": text_value(scene.get("scene_position")),
+        "scene_source_scope": text_value(scene.get("scene_source_scope") or scene.get("scene_name")),
+        "scene_flow": scene_flow,
+        "review_notes": as_list(scene.get("review_notes")),
+    }
+
+
+def normalize_continuity_items(value: Any) -> list[dict[str, str]]:
+    items = as_list(value)
+    if not items and text_present(value):
+        items = [value]
+    normalized: list[dict[str, str]] = []
+    for item in items:
+        record = as_dict(item)
+        if record:
+            target = text_value(record.get("target") or record.get("target_name") or record.get("name") or record.get("motif"))
+            note = text_value(record.get("note") or record.get("risk") or record.get("state_risk") or record.get("change_or_risk") or record.get("reason") or record)
+        else:
+            target = ""
+            note = text_value(item)
+        if target or note:
+            normalized.append({"target": target, "note": note})
+    return normalized
+
+
+def normalize_asset_refs(value: Any) -> list[dict[str, str]]:
+    refs = as_list(value)
+    if not refs and text_present(value):
+        refs = [value]
+    normalized: list[dict[str, str]] = []
+    for item in refs:
+        record = as_dict(item)
+        if record:
+            display_name = text_value(record.get("display_name") or record.get("name") or record.get("base_name"))
+            asset_id = text_value(record.get("asset_id") or record.get("id"))
+            version_id = text_value(record.get("version_id") or record.get("version") or record.get("version_label"))
+        else:
+            display_name = text_value(item)
+            asset_id = ""
+            version_id = ""
+        if display_name or asset_id or version_id:
+            normalized.append({
+                "display_name": display_name,
+                "asset_id": asset_id,
+                "version_id": version_id,
+            })
+    return normalized
 
 
 def scene_summary_text_for_scene(artifacts: dict[str, WorkflowArtifact], scene_id: str) -> str:
@@ -840,6 +953,7 @@ def compact_asset_index_rows(path: Path, asset_type: str) -> list[dict[str, Any]
         base_name = text_value(record.get("base_name"))
         item = {
             "asset_id": text_value(record.get("id")),
+            "version_id": text_value(record.get("version_id") or record.get("id")),
             "name": name,
             "base_name": base_name,
             "type": asset_type,
@@ -912,7 +1026,7 @@ def build_user_prompt(node: WorkflowNode, variables: dict[str, str]) -> str:
     if node.id == "chapter_summary":
         return f"请输出 {variables['当前章节编号']} 的章节概要。"
     if node.id == "episode_summary":
-        return f"请输出 {variables['当前集编号']} 的单集概要。"
+        return f"请输出 {variables['当前集编号']} 的集级或集场一体产物。"
     if node.id in {"scene_summary", "storyboard_design"}:
         return f"请处理 {variables['当前集编号']} / {variables['当前场编号']}。"
     if node.id == "video_prompt":
@@ -948,7 +1062,6 @@ def video_block_plan_text_for_scene(artifacts: dict[str, WorkflowArtifact], epis
     return json.dumps({
         "episode_id": episode_id,
         "scene_id": scene_id,
-        "scene_base": {},
         "video_blocks": [],
         "warning": "未找到当前集/场对应的分块规划，请先运行当前场分块规划。",
     }, ensure_ascii=False, indent=2)
@@ -1004,8 +1117,8 @@ def previous_video_prompt_for_block(artifacts: dict[str, WorkflowArtifact], outp
     video_prompt = artifacts.get("video_prompt")
     if not video_prompt or video_prompt.status != "done":
         return f"上一块编号：{previous_id}，暂无已生成提示词。"
-    groups = as_list(video_prompt.output.get("groups")) if video_prompt else []
-    previous_group = next((as_dict(group) for group in groups if text_value(as_dict(group).get("block_id") or as_dict(group).get("group_id")) == previous_id), {})
+    prompts = video_prompt_items(video_prompt.output)
+    previous_group = next((item for item in prompts if text_value(item.get("block_id")) == previous_id), {})
     prompt = text_value(previous_group.get("prompt"))
     if not prompt:
         return f"上一块编号：{previous_id}，暂无已生成提示词。"
@@ -1014,32 +1127,32 @@ def previous_video_prompt_for_block(artifacts: dict[str, WorkflowArtifact], outp
 
 def merge_video_prompt_output(existing_artifact: WorkflowArtifact | None, parsed: Any, replace_all: bool = False) -> Any:
     parsed_dict = as_dict(parsed)
-    new_groups = [as_dict(group) for group in as_list(parsed_dict.get("groups")) if as_dict(group)]
+    new_prompts = video_prompt_items(parsed_dict)
     if replace_all:
         return parsed
-    if not existing_artifact or not existing_artifact.output or not new_groups:
+    if not existing_artifact or not existing_artifact.output or not new_prompts:
         return parsed
-    existing_groups = [as_dict(group) for group in as_list(existing_artifact.output.get("groups")) if as_dict(group)]
-    if not existing_groups:
+    existing_prompts = video_prompt_items(existing_artifact.output)
+    if not existing_prompts:
         return parsed
     merged_by_id = {
-        text_value(group.get("block_id") or group.get("group_id")): group
-        for group in existing_groups
-        if text_value(group.get("block_id") or group.get("group_id"))
+        text_value(item.get("block_id")): item
+        for item in existing_prompts
+        if text_value(item.get("block_id"))
     }
-    for group in new_groups:
-        block_id = text_value(group.get("block_id") or group.get("group_id"))
+    for item in new_prompts:
+        block_id = text_value(item.get("block_id"))
         if block_id:
-            merged_by_id[block_id] = group
-    order = [text_value(group.get("block_id") or group.get("group_id")) for group in existing_groups]
-    for group in new_groups:
-        block_id = text_value(group.get("block_id") or group.get("group_id"))
+            merged_by_id[block_id] = item
+    order = [text_value(item.get("block_id")) for item in existing_prompts]
+    for item in new_prompts:
+        block_id = text_value(item.get("block_id"))
         if block_id and block_id not in order:
             order.append(block_id)
     return {
         **existing_artifact.output,
         **parsed_dict,
-        "groups": [merged_by_id[block_id] for block_id in order if block_id in merged_by_id],
+        "video_prompts": [merged_by_id[block_id] for block_id in order if block_id in merged_by_id],
     }
 
 
@@ -1056,38 +1169,44 @@ def previous_video_prompt_from_block_plan_text(value: str) -> str:
 def normalize_video_prompt_output(parsed: Any, block_plan_text: str) -> dict[str, Any]:
     parsed_dict = as_dict(parsed)
     plan = parse_json_text(block_plan_text) if block_plan_text else {}
-    blocks = [as_dict(item) for item in as_list(as_dict(plan).get("video_blocks")) if as_dict(item)]
-    prompt_items = as_list(parsed_dict.get("video_prompts"))
+    plan_dict = as_dict(plan)
+    blocks = [as_dict(item) for item in as_list(plan_dict.get("video_blocks")) if as_dict(item)]
+    prompt_items = video_prompt_items(parsed_dict)
     prompt_by_block_id: dict[str, dict[str, Any]] = {}
     for item in prompt_items:
         prompt_item = as_dict(item)
-        block_id = text_value(prompt_item.get("block_id") or prompt_item.get("group_id"))
+        block_id = text_value(prompt_item.get("block_id"))
         if block_id:
             prompt_by_block_id[block_id] = prompt_item
-    groups: list[dict[str, Any]] = []
+    video_prompts: list[dict[str, Any]] = []
     for index, block in enumerate(blocks):
         block_id = text_value(block.get("block_id")) or f"VB{index + 1:03d}"
         prompt_item = prompt_by_block_id.get(block_id, {})
         prompt = normalized_prompt_text(prompt_item)
         if not prompt:
             prompt = text_value(prompt_item.get("prompt"))
-        groups.append({
-            "group_id": block_id,
+        block_overrides = as_dict(block.get("flow_overrides"))
+        prompt_asset_refs = normalize_asset_refs(prompt_item.get("asset_refs"))
+        block_asset_refs = normalize_asset_refs(block_overrides.get("asset_refs") or block.get("asset_refs"))
+        video_prompts.append({
             "block_id": block_id,
-            "duration_seconds": block.get("duration_seconds"),
-            "source_text": block.get("source_text"),
             "prompt": prompt,
-            "asset_refs": as_list(block.get("asset_refs")),
-            "reference_image_paths": [],
-            "status": "draft",
-            "video_path": "",
+            "asset_refs": prompt_asset_refs or block_asset_refs,
         })
-    if not groups:
+    if not video_prompts:
         raise ValueError("视频提示词输出无有效块，请检查 LLM JSON 输出。")
-    missing = [text_value(group.get("block_id")) for group in groups if not text_value(group.get("prompt"))]
+    missing = [text_value(item.get("block_id")) for item in video_prompts if not text_value(item.get("prompt"))]
     if missing:
         raise ValueError(f"视频提示词缺少块内容：{', '.join(missing)}")
-    return {"groups": groups}
+    return {
+        "episode_id": text_value(plan_dict.get("episode_id")),
+        "scene_id": text_value(plan_dict.get("scene_id")),
+        "video_prompts": video_prompts,
+    }
+
+
+def video_prompt_items(output: dict[str, Any]) -> list[dict[str, Any]]:
+    return [as_dict(item) for item in as_list(output.get("video_prompts")) if as_dict(item)]
 
 
 def normalized_prompt_text(prompt_item: dict[str, Any]) -> str:

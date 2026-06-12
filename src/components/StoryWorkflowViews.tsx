@@ -11,6 +11,8 @@ export type StoryboardExecutionMode = "integrated" | "separate";
 export type StoryWorkflowRunOptions = {
   chapterId?: string;
   chapterIds?: string[];
+  episodeId?: string;
+  sceneId?: string;
   blockId?: string;
   blockStart?: string;
   blockEnd?: string;
@@ -95,6 +97,7 @@ export function StoryboardPlanningView({
   runningBatchLabel,
   onRunNode,
   onRunNodes,
+  onRunEpisodeScenes,
   onRefresh,
 }: {
   projectId: string;
@@ -110,6 +113,7 @@ export function StoryboardPlanningView({
   runningBatchLabel: string;
   onRunNode: (nodeId: StoryWorkflowNodeId, options?: StoryWorkflowRunOptions) => Promise<StoryWorkflowArtifact | null>;
   onRunNodes: (nodeIds: StoryWorkflowNodeId[], options?: StoryWorkflowRunOptions) => void;
+  onRunEpisodeScenes: (nodeIds: StoryWorkflowNodeId[], sceneIds: string[], options?: StoryWorkflowRunOptions) => void;
   onRefresh: () => void;
 }) {
   const workflowEpisodes = state?.episodes ?? [];
@@ -140,12 +144,9 @@ export function StoryboardPlanningView({
           <h2>分镜统筹</h2>
         </div>
         <div className="header-actions">
-          <div className="mode-switch compact" aria-label="分镜统筹执行模式">
-            <button className={executionMode === "integrated" ? "active" : ""} onClick={() => onExecutionModeChange("integrated")}>
-              集场一体
-            </button>
-            <button className={executionMode === "separate" ? "active" : ""} onClick={() => onExecutionModeChange("separate")}>
-              集场分开
+          <div className="mode-switch compact locked" aria-label="分镜统筹执行模式">
+            <button className="active" disabled title="生产模式由项目类型决定，生成集/场产物后不允许切换。">
+              {executionMode === "integrated" ? "集场一体" : "集场分开"}
             </button>
           </div>
           <select value={selectedEpisodeId} onChange={(event) => handleEpisodeChange(event.target.value)}>
@@ -165,6 +166,10 @@ export function StoryboardPlanningView({
           <button className="primary-button" onClick={() => onRunNodes(runNodeIds, { executionMode })} disabled={Boolean(runningNodeId || runningBatchLabel)}>
             <Play size={16} />
             {runningBatchLabel ? "执行中" : "运行分镜统筹"}
+          </button>
+          <button onClick={() => onRunEpisodeScenes(runNodeIds, sceneOptions.map((scene) => scene.sceneId), { executionMode })} disabled={Boolean(runningNodeId || runningBatchLabel || !sceneOptions.length)}>
+            <Sparkles size={16} />
+            本集全部场次
           </button>
           <button onClick={onRefresh}>
             <RefreshCcw size={16} />
@@ -222,6 +227,8 @@ function StoryboardPlanningBoard({
   const [scopedArtifacts, setScopedArtifacts] = useState<Partial<Record<StoryboardPlanningStage, StoryWorkflowArtifact>>>({});
   const [isScopedArtifactLoading, setIsScopedArtifactLoading] = useState(false);
   const stageNodes = useMemo(() => buildStoryboardPlanningStages(nodes), [nodes]);
+  const stageNodeIds = useMemo(() => stageNodes.map((node) => node.id as StoryboardPlanningStage), [stageNodes]);
+  const stageNodeKey = stageNodeIds.join("|");
   const activeNode = stageNodes.find((node) => node.id === activeNodeId) ?? stageNodes[0];
   const mergedArtifacts = { ...artifacts, ...scopedArtifacts };
   const activeArtifact = activeNode ? mergedArtifacts[activeNode.id] : undefined;
@@ -243,13 +250,14 @@ function StoryboardPlanningBoard({
     }
     let cancelled = false;
     setIsScopedArtifactLoading(true);
+    const scopedNodeIds = stageNodeIds;
     Promise.all(
-      stageNodes.map(async (node) => {
-        const result = await loadStoryWorkflowArtifact(projectId, node.id as StoryboardPlanningStage, {
+      scopedNodeIds.map(async (nodeId) => {
+        const result = await loadStoryWorkflowArtifact(projectId, nodeId, {
           episodeId: selectedEpisodeId,
           sceneId: selectedSceneId || sceneLabel,
         });
-        return [node.id, result.artifact] as const;
+        return [nodeId, result.artifact] as const;
       }),
     )
       .then((entries) => {
@@ -269,7 +277,7 @@ function StoryboardPlanningBoard({
     return () => {
       cancelled = true;
     };
-  }, [projectId, selectedEpisodeId, selectedSceneId, sceneLabel, stageNodes, artifacts]);
+  }, [projectId, selectedEpisodeId, selectedSceneId, sceneLabel, stageNodeKey, artifacts.episode_summary?.updatedAt, artifacts.scene_summary?.updatedAt, artifacts.storyboard_design?.updatedAt]);
 
   if (!stageNodes.length) {
     return <div className="empty-state">当前项目还没有读取到分镜统筹节点。请确认后端在线。</div>;

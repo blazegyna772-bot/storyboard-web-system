@@ -1,5 +1,5 @@
 import { analyzeScript } from "./storyboard";
-import type { AnalysisOptions, ScriptAnalysis } from "./storyboard";
+import type { AnalysisOptions, EpisodeResult, ScriptAnalysis } from "./storyboard";
 
 export interface StoryboardProject {
   projectId: string;
@@ -65,29 +65,65 @@ export function updateProjectSnapshot(project: StoryboardProject, input: Project
   };
 }
 
+export function normalizeProjectOptions(options: Partial<AnalysisOptions> | undefined, fallback: AnalysisOptions): AnalysisOptions {
+  const targetShotSeconds = Number(options?.targetShotSeconds ?? fallback.targetShotSeconds);
+  return {
+    genreProfile: options?.genreProfile || fallback.genreProfile || "都市情感短剧",
+    directorProfile: options?.directorProfile || fallback.directorProfile || "强冲突快节奏",
+    targetShotSeconds: Number.isFinite(targetShotSeconds) ? targetShotSeconds : 5,
+    aspectRatio: options?.aspectRatio || fallback.aspectRatio || "9:16",
+    contentType: options?.contentType || fallback.contentType || "短剧",
+  };
+}
+
+export function normalizeProject(project: StoryboardProject, fallbackOptions: AnalysisOptions): StoryboardProject {
+  const options = normalizeProjectOptions(project.options, fallbackOptions);
+  return {
+    ...project,
+    folderName: project.folderName || toSafeFolderName(project.name),
+    createdAt: project.createdAt || project.updatedAt || new Date().toISOString(),
+    updatedAt: project.updatedAt || new Date().toISOString(),
+    description: project.description ?? "",
+    owner: project.owner ?? "",
+    status: project.status ?? "制作中",
+    coverImage: project.coverImage ?? "",
+    script: project.script ?? "",
+    options,
+    analysis: normalizeProjectAnalysis(project.script ?? "", project.analysis, options),
+  };
+}
+
 export function normalizeProjectAnalysis(script: string, analysis: ScriptAnalysis | undefined, options: AnalysisOptions): ScriptAnalysis {
-  const nextAnalysis = analyzeScript(script, options);
-  if (!analysis?.episodes?.length) return nextAnalysis;
+  const normalizedOptions = normalizeProjectOptions(options, options);
+  const nextAnalysis = analyzeScript(script, normalizedOptions);
+  if (!Array.isArray(analysis?.episodes) || !analysis.episodes.length) return nextAnalysis;
   if (script.trim() && nextAnalysis.episodes.length !== analysis.episodes.length) return nextAnalysis;
   if (script.trim() && analysis.totalCharacters !== script.trim().length) return nextAnalysis;
   return {
     ...analysis,
-    options,
+    totalCharacters: Number.isFinite(Number(analysis.totalCharacters)) ? Number(analysis.totalCharacters) : nextAnalysis.totalCharacters,
+    options: normalizedOptions,
+    episodes: analysis.episodes.map((episode, index) => normalizeEpisodeResult(episode, nextAnalysis.episodes[index])),
+    warnings: Array.isArray(analysis.warnings) ? analysis.warnings : [],
+  };
+}
+
+function normalizeEpisodeResult(episode: Partial<EpisodeResult> | undefined, fallback: EpisodeResult | undefined): EpisodeResult {
+  const sourceText = episode?.sourceText ?? fallback?.sourceText ?? "";
+  return {
+    episodeId: episode?.episodeId || fallback?.episodeId || "EP01",
+    title: episode?.title || fallback?.title || episode?.episodeId || "EP01",
+    logline: episode?.logline || fallback?.logline || "",
+    sourceText,
+    characterCount: Number.isFinite(Number(episode?.characterCount)) ? Number(episode?.characterCount) : sourceText.length,
+    assets: Array.isArray(episode?.assets) ? episode.assets : fallback?.assets ?? [],
+    shots: Array.isArray(episode?.shots) ? episode.shots : fallback?.shots ?? [],
+    prompts: Array.isArray(episode?.prompts) ? episode.prompts : fallback?.prompts ?? [],
   };
 }
 
 function createId(prefix: string) {
   return `${prefix}-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(16).slice(2, 6).toUpperCase()}`;
-}
-
-function normalizeAnalysisOptions(options: AnalysisOptions | undefined, fallback: AnalysisOptions): AnalysisOptions {
-  return {
-    genreProfile: options?.genreProfile ?? fallback.genreProfile,
-    directorProfile: options?.directorProfile ?? fallback.directorProfile,
-    targetShotSeconds: options?.targetShotSeconds ?? fallback.targetShotSeconds,
-    aspectRatio: options?.aspectRatio ?? fallback.aspectRatio,
-    contentType: options?.contentType ?? fallback.contentType,
-  };
 }
 
 export function createDefaultProjectName(existingCount: number) {
