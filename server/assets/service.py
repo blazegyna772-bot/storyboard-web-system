@@ -43,6 +43,12 @@ ASSET_EXTRACT_CONFIG = {
         "file": "props_extract.json",
     },
 }
+CHAPTER_ASSET_EXTRACT_PROMPT = "default:asset_extract_chapter/prompt.md"
+CHAPTER_ASSET_KIND_ROOTS = {
+    "characters": "CHAR",
+    "scenes": "SCENE",
+    "props": "PROP",
+}
 
 
 def empty_asset_bundle() -> AssetReviewBundle:
@@ -332,6 +338,57 @@ async def extract_prop_records(root_path: Path, project_id: str) -> AssetReviewB
     return await extract_asset_records(root_path, project_id, "props")
 
 
+async def extract_chapter_asset_records(root_path: Path, project_id: str) -> AssetReviewBundle:
+    base = get_project_base(root_path, project_id)
+    episodes = read_project_episode_texts(base)
+    if not any(episode["text"].strip() for episode in episodes):
+        raise ValueError("当前项目没有可用于资产提取的剧本")
+    chapter_refs = asset_chapter_refs(base, episodes)
+    prompt_detail = read_prompt(CHAPTER_ASSET_EXTRACT_PROMPT)
+    prompt = prompt_detail["content"]
+    bundle = empty_asset_bundle()
+    records: dict[str, list[dict[str, Any]]] = {kind: [] for kind in ASSET_KINDS}
+    true_sources: dict[str, list[dict[str, Any]]] = {kind: [] for kind in ASSET_KINDS}
+    global_clues = asset_global_clues_text(base)
+    for chapter_ref in chapter_refs:
+        chapter_script = "\n\n".join(episode["text"] for episode in episodes if episode["episodeId"] in set(chapter_ref["episode_ids"]))
+        if not chapter_script.strip():
+            continue
+        system_prompt = render_asset_prompt(prompt, {
+            "当前章节编号": chapter_ref["chapter_id"],
+            "当前章节剧本": chapter_script,
+            "全局资产线索": global_clues,
+            "已有资产索引": asset_registry_index_text(true_sources),
+        })
+        response = await call_openai_compatible(
+            LlmChatRequest(
+                stageId="asset_extract_chapter",
+                label=f"章节资产提取 {chapter_ref['chapter_id']}",
+                promptId=prompt_detail.get("version", {}).get("id") or CHAPTER_ASSET_EXTRACT_PROMPT,
+                jsonMode=True,
+                maxTokens=12000,
+                messages=[
+                    ChatMessage(role="system", content=system_prompt),
+                    ChatMessage(role="user", content="请按系统提示词输出 JSON。"),
+                ],
+            )
+        )
+        chapter_records = parse_chapter_asset_records(response, chapter_ref["chapter_id"])
+        for kind in ASSET_KINDS:
+            for record in chapter_records[kind]:
+                merged = merge_chapter_asset_record(kind, record, true_sources[kind], chapter_ref["chapter_id"])
+                records[kind].append(merged["record"])
+                if merged["true_source"]:
+                    true_sources[kind].append(merged["true_source"])
+    for kind in ASSET_KINDS:
+        bundle.records[kind] = records[kind]
+        bundle.trueSources[kind] = true_sources[kind]
+        write_json(base / "records" / f"{kind}_extract.json", records[kind])
+        write_json(base / "true_sources" / f"{kind}.json", true_sources[kind])
+    write_json(base / "records" / "chapter_asset_extract.json", {"chapters": chapter_refs, "records": records})
+    return read_asset_bundle(root_path, project_id)
+
+
 async def extract_asset_records(root_path: Path, project_id: str, kind: str) -> AssetReviewBundle:
     config = ASSET_EXTRACT_CONFIG.get(kind)
     if not config:
@@ -455,6 +512,94 @@ def read_project_script_text(base: Path) -> str:
     return ""
 
 
+def read_project_episode_texts(base: Path) -> list[dict[str, str]]:
+    episodes_dir = base / "input" / "episodes"
+    episode_files = sorted(episodes_dir.glob("*.txt"), key=lambda item: item.name)
+    episodes: list[dict[str, str]] = []
+    for index, file in enumerate(episode_files):
+        text = file.read_text(encoding="utf-8").strip()
+        if not text:
+            continue
+        number = marker_number(file.stem) or index + 1
+        episodes.append({"episodeId": f"EP{number:02d}", "title": file.stem, "text": text})
+    if episodes:
+        return episodes
+    script = read_project_script_text(base)
+    return [{"episodeId": "EP01", "title": "EP01", "text": script}]
+
+
+def asset_chapter_refs(base: Path, episodes: list[dict[str, str]]) -> list[dict[str, Any]]:
+    story_map = read_json(base / "artifacts" / "story_workflow" / "story_map.json", {})
+    chapter_map = story_map.get("chapter_map") if isinstance(story_map, dict) else []
+    refs: list[dict[str, Any]] = []
+    for index, item in enumerate(chapter_map if isinstance(chapter_map, list) else []):
+        if not isinstance(item, dict):
+            continue
+        chapter_id = normalize_chapter_id(item.get("chapter_id") or index + 1)
+        episode_ids = episode_ids_from_range(str(item.get("episode_range") or ""), episodes)
+        if not episode_ids:
+            continue
+        refs.append({"chapter_id": chapter_id, "episode_ids": episode_ids, "episode_range": str(item.get("episode_range") or "")})
+    if refs:
+        return refs
+    return [{"chapter_id": "chapter_01", "episode_ids": [episode["episodeId"] for episode in episodes], "episode_range": ""}]
+
+
+def asset_global_clues_text(base: Path) -> str:
+    story_base = base / "artifacts" / "story_workflow"
+    clues = {
+        "character_summary": read_json(story_base / "character_summary.json", {}),
+        "continuity": read_json(story_base / "continuity.json", {}),
+        "series_summary": read_json(story_base / "series_summary.json", {}),
+    }
+    compact = {key: value for key, value in clues.items() if value}
+    if not compact:
+        return "未找到全局资产线索。"
+    return json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+
+
+def normalize_chapter_id(value: Any) -> str:
+    number = marker_number(str(value or "1")) or 1
+    return f"chapter_{number:02d}"
+
+
+def episode_ids_from_range(episode_range: str, episodes: list[dict[str, str]]) -> list[str]:
+    if not episode_range:
+        return []
+    numbers = [marker_number(match.group(1)) for match in re.finditer(r"(?:EP|第)?\s*([0-9０-９一二三四五六七八九十百零〇两]+)", episode_range, re.I)]
+    numbers = [number for number in numbers if number > 0]
+    if not numbers:
+        return []
+    start, end = (numbers[0], numbers[-1]) if len(numbers) > 1 else (numbers[0], numbers[0])
+    if start > end:
+        start, end = end, start
+    valid_ids = {episode["episodeId"] for episode in episodes}
+    return [f"EP{number:02d}" for number in range(start, end + 1) if f"EP{number:02d}" in valid_ids]
+
+
+def marker_number(value: str) -> int:
+    raw = str(value or "").strip()
+    if not raw:
+        return 0
+    normalized_digits = raw.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+    digit_match = re.search(r"\d+", normalized_digits)
+    if digit_match:
+        return int(digit_match.group(0))
+    numerals = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+    if "十" in raw:
+        left, _, right = raw.partition("十")
+        tens = numerals.get(left, 1) if left else 1
+        ones = numerals.get(right, 0) if right else 0
+        return tens * 10 + ones
+    return numerals.get(raw, 0)
+
+
+def infer_asset_version_label(name: str, base_name: str) -> str:
+    if base_name and name.startswith(base_name):
+        return name[len(base_name):].lstrip("-_ /").strip()
+    return ""
+
+
 def parse_character_records(response: dict[str, Any]) -> list[dict[str, Any]]:
     return parse_asset_records(response, "characters")
 
@@ -484,6 +629,155 @@ def parse_asset_records(response: dict[str, Any], kind: str) -> list[dict[str, A
     if kind == "props":
         return normalize_prop_records(rows)
     return _normalize_list(rows)
+
+
+def parse_chapter_asset_records(response: dict[str, Any], chapter_id: str) -> dict[str, list[dict[str, Any]]]:
+    content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+    if not isinstance(content, str):
+        return {kind: [] for kind in ASSET_KINDS}
+    content = content.strip()
+    fenced = re.search(r"```(?:json)?\s*(.*?)```", content, flags=re.DOTALL)
+    if fenced:
+        content = fenced.group(1).strip()
+    parsed = json.loads(content)
+    if not isinstance(parsed, dict):
+        return {kind: [] for kind in ASSET_KINDS}
+    return {
+        "characters": normalize_chapter_asset_rows(parsed.get("characters"), "characters", chapter_id),
+        "scenes": normalize_chapter_asset_rows(parsed.get("scenes"), "scenes", chapter_id),
+        "props": normalize_chapter_asset_rows(parsed.get("props"), "props", chapter_id),
+    }
+
+
+def normalize_chapter_asset_rows(rows: Any, kind: str, chapter_id: str) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for row in _normalize_list(rows):
+        action = str(row.get("action") or "create_asset").strip()
+        if action not in {"use_existing", "create_asset", "create_version"}:
+            action = "create_asset"
+        display_name = str(row.get("display_name") or row.get("name") or "").strip()
+        if not display_name:
+            continue
+        normalized.append({
+            "chapter_id": chapter_id,
+            "kind": kind,
+            "action": action,
+            "display_name": display_name,
+            "asset_id": str(row.get("asset_id") or "").strip(),
+            "version_id": str(row.get("version_id") or "").strip(),
+            "version_name": str(row.get("version_name") or "默认版").strip() or "默认版",
+            "asset_note": limit_text(row.get("asset_note"), 40),
+            "version_note": limit_text(row.get("version_note"), 40),
+            "evidence": limit_text(row.get("evidence"), 60),
+            "aliases": normalize_aliases(row.get("aliases")),
+        })
+    return normalized
+
+
+def merge_chapter_asset_record(kind: str, record: dict[str, Any], rows: list[dict[str, Any]], chapter_id: str) -> dict[str, Any]:
+    action = str(record.get("action") or "create_asset")
+    asset_id = str(record.get("asset_id") or "").strip()
+    version_id = str(record.get("version_id") or "").strip()
+    display_name = str(record.get("display_name") or "").strip()
+    existing_asset = find_asset_row(rows, asset_id, "")
+    if action == "use_existing" and version_id:
+        existing_version = find_asset_row(rows, asset_id, version_id)
+        if existing_version:
+            return {"record": {**record, "asset_id": existing_version.get("asset_id") or existing_version.get("id"), "version_id": existing_version.get("version_id") or existing_version.get("id")}, "true_source": None}
+    if action == "create_version" and existing_asset:
+        asset_id = str(existing_asset.get("asset_id") or existing_asset.get("id") or asset_id)
+    elif not asset_id:
+        asset_id = build_asset_id(CHAPTER_ASSET_KIND_ROOTS[kind], display_name, display_name, len(rows))
+    if not version_id:
+        version_id = next_version_id(asset_id, rows)
+    true_source = build_chapter_true_source(kind, record, asset_id, version_id, chapter_id)
+    return {"record": {**record, "asset_id": asset_id, "version_id": version_id}, "true_source": true_source}
+
+
+def build_chapter_true_source(kind: str, record: dict[str, Any], asset_id: str, version_id: str, chapter_id: str) -> dict[str, str]:
+    display_name = str(record.get("display_name") or "")
+    version_name = str(record.get("version_name") or "默认版")
+    asset_note = str(record.get("asset_note") or "")
+    version_note = str(record.get("version_note") or "")
+    evidence = str(record.get("evidence") or "")
+    row = {
+        "id": version_id,
+        "asset_id": asset_id,
+        "version_id": version_id,
+        "name": display_name,
+        "version_name": version_name,
+        "description": asset_note,
+        "version_note": version_note,
+        "aliases": str(record.get("aliases") or ""),
+        "first_seen": chapter_id,
+        "evidence": evidence,
+        "image_prompt": "，".join(item for item in [display_name, asset_note, version_note] if item),
+        "continuity": "保持资产与版本识别说明一致。",
+        "status": "draft",
+    }
+    if kind == "characters":
+        row["base_name"] = display_name
+        row["appearance"] = version_note or asset_note
+        row["outfit"] = ""
+    elif kind == "scenes":
+        row["fixed_elements"] = version_note
+        row["state_trigger"] = evidence
+    else:
+        row["appearance"] = version_note or asset_note
+        row["state_changes"] = version_note
+        row["plot_role"] = evidence
+    return row
+
+
+def find_asset_row(rows: list[dict[str, Any]], asset_id: str, version_id: str) -> dict[str, Any] | None:
+    for row in rows:
+        row_asset_id = str(row.get("asset_id") or row.get("id") or "")
+        row_version_id = str(row.get("version_id") or row.get("id") or "")
+        if asset_id and row_asset_id != asset_id:
+            continue
+        if version_id and row_version_id != version_id:
+            continue
+        return row
+    return None
+
+
+def next_version_id(asset_id: str, rows: list[dict[str, Any]]) -> str:
+    count = 1
+    for row in rows:
+        if str(row.get("asset_id") or row.get("id") or "") == asset_id:
+            count += 1
+    return f"{asset_id}_v{count:02d}"
+
+
+def asset_registry_index_text(true_sources: dict[str, list[dict[str, Any]]]) -> str:
+    index = {kind: [compact_asset_registry_row(row, kind) for row in rows] for kind, rows in true_sources.items()}
+    if not any(index.values()):
+        return "空资产索引。本章出现的有效资产需要创建新资产。"
+    return json.dumps(index, ensure_ascii=False, separators=(",", ":"))
+
+
+def compact_asset_registry_row(row: dict[str, Any], kind: str) -> dict[str, str]:
+    item = {
+        "asset_id": str(row.get("asset_id") or row.get("id") or ""),
+        "display_name": str(row.get("name") or ""),
+        "category": asset_kind_cn(kind),
+        "version_id": str(row.get("version_id") or row.get("id") or ""),
+        "version_name": str(row.get("version_name") or infer_asset_version_label(str(row.get("name") or ""), str(row.get("base_name") or "")) or "默认版"),
+        "asset_note": str(row.get("description") or row.get("appearance") or ""),
+        "version_note": str(row.get("version_note") or row.get("fixed_elements") or row.get("state_changes") or ""),
+        "first_seen": str(row.get("first_seen") or ""),
+        "aliases": str(row.get("aliases") or ""),
+    }
+    return {key: value for key, value in item.items() if value}
+
+
+def asset_kind_cn(kind: str) -> str:
+    return {"characters": "角色", "scenes": "场景", "props": "物品"}.get(kind, kind)
+
+
+def limit_text(value: Any, max_length: int) -> str:
+    text = str(value or "").strip()
+    return text[:max_length]
 
 
 def normalize_character_records(rows: Any) -> list[dict[str, Any]]:

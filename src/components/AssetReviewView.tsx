@@ -23,16 +23,18 @@ export function AssetReviewView({
   onChange,
   onSave,
   onExtractRecords,
+  onExtractChapterAssets,
   onImageEvent,
   onTaskRefresh,
 }: {
   projectId: string;
   bundle: AssetReviewBundle;
   isDirty: boolean;
-  runningExtractKinds: AssetKind[];
+  runningExtractKinds: Array<AssetKind | "chapters">;
   onChange: (bundle: AssetReviewBundle) => void;
   onSave: (bundle: AssetReviewBundle) => void;
   onExtractRecords: (kind: AssetKind) => void;
+  onExtractChapterAssets: () => void;
   onImageEvent: (level: DevLogLevel, message: string, detail?: string) => void;
   onTaskRefresh: () => void;
 }) {
@@ -43,6 +45,7 @@ export function AssetReviewView({
   const records = normalizedBundle.records[activeKind];
   const trueSources = normalizedBundle.trueSources[activeKind];
   const isCurrentKindExtracting = runningExtractKinds.includes(activeKind);
+  const isChapterExtracting = runningExtractKinds.includes("chapters");
   const lockedCount = Object.values(normalizedBundle.trueSources).flat().filter((item) => item.status === "locked").length;
   const confirmedCount = Object.values(normalizedBundle.trueSources).flat().filter((item) => item.status === "confirmed").length;
 
@@ -67,6 +70,10 @@ export function AssetReviewView({
           <h2>资产审阅</h2>
         </div>
         <div className="header-actions">
+          <button className="primary-button" onClick={onExtractChapterAssets} disabled={isChapterExtracting}>
+            <Sparkles size={16} />
+            {isChapterExtracting ? "按章节提取中" : "按章节提取资产"}
+          </button>
           <button onClick={() => onExtractRecords(activeKind)} disabled={isCurrentKindExtracting}>
             <Sparkles size={16} />
             {isCurrentKindExtracting ? "提取中" : `提取${assetKindLabel(activeKind)}记录`}

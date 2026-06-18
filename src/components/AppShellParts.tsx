@@ -130,7 +130,7 @@ export function buildRunningTopTasks({
   imageTasks,
   llmLogs,
 }: {
-  runningAssetExtractKinds: AssetKind[];
+  runningAssetExtractKinds: Array<AssetKind | "chapters">;
   runningStoryNodeId: StoryWorkflowNodeId | "";
   runningStoryBatchLabel: string;
   imageTasks: BackendImageTask[];
@@ -140,7 +140,7 @@ export function buildRunningTopTasks({
   for (const kind of runningAssetExtractKinds) {
     tasks.push({
       id: `asset-extract-${kind}`,
-      name: `LLM 提取${assetKindLabel(kind)}资产中`,
+      name: kind === "chapters" ? "LLM 按章节提取资产中" : `LLM 提取${assetKindLabel(kind)}资产中`,
       category: "llm",
     });
   }

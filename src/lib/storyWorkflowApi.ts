@@ -62,6 +62,7 @@ export interface RunStoryWorkflowNodeInput {
   blockEnd?: string;
   executionMode?: "integrated" | "separate";
   maxTokens?: number;
+  targetChapterCount?: number;
 }
 
 export function loadStoryWorkflowState(projectId: string) {

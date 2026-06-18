@@ -11,6 +11,7 @@ export type StoryboardExecutionMode = "integrated" | "separate";
 export type StoryWorkflowRunOptions = {
   chapterId?: string;
   chapterIds?: string[];
+  targetChapterCount?: number;
   episodeId?: string;
   sceneId?: string;
   blockId?: string;
@@ -421,6 +422,7 @@ function StoryPlanningBoard({
   const [stage, setStage] = useState<StoryPlanningStage>("series");
   const [activeSeriesNodeId, setActiveSeriesNodeId] = useState<StoryWorkflowNodeId>("series_summary");
   const [artifactView, setArtifactView] = useState<"review" | "json">("review");
+  const [targetChapterCount, setTargetChapterCount] = useState(4);
   const [selectedChapterId, setSelectedChapterId] = useState("chapter_01");
   const [chapterArtifact, setChapterArtifact] = useState<StoryWorkflowArtifact | null>(null);
   const [isChapterArtifactLoading, setIsChapterArtifactLoading] = useState(false);
@@ -517,8 +519,20 @@ function StoryPlanningBoard({
                 status={activeSeriesStatus}
                 isRunning={runningNodeId === activeSeriesNode.id}
                 isBusy={Boolean(runningNodeId || runningBatchLabel)}
-                onRun={() => onRunNode(activeSeriesNode.id)}
+                onRun={() => onRunNode(activeSeriesNode.id, activeSeriesNode.id === "story_map" ? { targetChapterCount } : {})}
                 runLabel={`执行${activeSeriesNode.title}`}
+                extraAction={
+                  activeSeriesNode.id === "story_map" ? (
+                    <label className="inline-control compact">
+                      <span>目标章节数</span>
+                      <select value={targetChapterCount} onChange={(event) => setTargetChapterCount(Number(event.target.value))}>
+                        {[2, 3, 4, 5, 6, 7, 8].map((count) => (
+                          <option key={count} value={count}>{count}</option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : undefined
+                }
               />
               <StoryArtifactPanel
                 title={`${activeSeriesNode.title}产物`}

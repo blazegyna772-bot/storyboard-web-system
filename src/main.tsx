@@ -43,6 +43,7 @@ import {
 } from "./lib/episodeSplit";
 import {
   emptyAssetReviewBundle,
+  extractProjectChapterAssets,
   extractProjectAssetRecords,
   loadProjectAssetReview,
   normalizeAssetReviewBundle,
@@ -184,7 +185,7 @@ function App() {
   const [isLogCollapsed, setIsLogCollapsed] = useLocalState("feedback-collapsed", "true");
   const [assetReviewBundle, setAssetReviewBundle] = useState<AssetReviewBundle>(emptyAssetReviewBundle);
   const [isAssetReviewDirty, setIsAssetReviewDirty] = useState(false);
-  const [runningAssetExtractKinds, setRunningAssetExtractKinds] = useState<AssetKind[]>([]);
+  const [runningAssetExtractKinds, setRunningAssetExtractKinds] = useState<Array<AssetKind | "chapters">>([]);
   const [storyWorkflow, setStoryWorkflow] = useState<StoryWorkflowState | null>(null);
   const [runningStoryNodeId, setRunningStoryNodeId] = useState<StoryWorkflowNodeId | "">("");
   const [runningStoryBatchLabel, setRunningStoryBatchLabel] = useState("");
@@ -594,6 +595,25 @@ function App() {
       showToast(`${assetKindLabel(kind)}记录提取失败`);
     } finally {
       setRunningAssetExtractKinds((current) => current.filter((item) => item !== kind));
+    }
+  }
+
+  async function handleExtractChapterAssets() {
+    if (!activeProject.projectId || runningAssetExtractKinds.includes("chapters")) return;
+    setRunningAssetExtractKinds((current) => current.includes("chapters") ? current : [...current, "chapters"]);
+    appendLog("asset-review", "info", "开始按章节提取资产", "按剧情结构图章节顺序执行，写入 records 与 true_sources。");
+    try {
+      const bundle = normalizeAssetReviewBundle(await extractProjectChapterAssets(activeProject.projectId));
+      setAssetReviewBundle(bundle);
+      setIsAssetReviewDirty(false);
+      void refreshBackendStatus();
+      appendLog("asset-review", "success", "按章节提取资产完成", `${countAssetBundleRows(bundle)} 条记录/真源。`);
+      showToast("按章节资产提取完成");
+    } catch (error) {
+      appendLog("asset-review", "error", "按章节提取资产失败", error instanceof Error ? error.message : "未知错误");
+      showToast("按章节资产提取失败");
+    } finally {
+      setRunningAssetExtractKinds((current) => current.filter((item) => item !== "chapters"));
     }
   }
 
@@ -1116,6 +1136,7 @@ function App() {
               onChange={updateAssetReviewBundle}
               onSave={(bundle) => void handleSaveAssetReview(bundle)}
               onExtractRecords={(kind) => void handleExtractAssetRecords(kind)}
+              onExtractChapterAssets={() => void handleExtractChapterAssets()}
               onImageEvent={(level, message, detail) => {
                 appendLog("asset-image", level, message, detail);
                 showToast(message);

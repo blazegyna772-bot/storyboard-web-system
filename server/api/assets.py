@@ -5,7 +5,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from server.assets.models import AssetImageGenerateRequest, AssetReviewBundle
-from server.assets.service import delete_asset_candidate_image, extract_character_records, extract_prop_records, extract_scene_records, generate_asset_image, get_asset_image_path, read_asset_bundle, select_asset_image_and_confirm, store_asset_image, write_asset_bundle
+from server.assets.service import delete_asset_candidate_image, extract_chapter_asset_records, extract_character_records, extract_prop_records, extract_scene_records, generate_asset_image, get_asset_image_path, read_asset_bundle, select_asset_image_and_confirm, store_asset_image, write_asset_bundle
 from server.image_providers.service import ImageProviderError
 from server.projects.service import require_active_root
 
@@ -56,6 +56,17 @@ async def extract_project_characters(project_id: str):
     try:
         root = require_active_root()
         return (await extract_character_records(root, project_id)).model_dump()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+
+@router.post("/extract/chapters")
+async def extract_project_chapter_assets(project_id: str):
+    try:
+        root = require_active_root()
+        return (await extract_chapter_asset_records(root, project_id)).model_dump()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except FileNotFoundError:
@@ -139,4 +150,3 @@ async def get_project_asset_image(project_id: str, bucket: str, kind: str, filen
         raise HTTPException(status_code=400, detail=str(exc))
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Image not found")
-

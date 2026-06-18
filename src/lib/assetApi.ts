@@ -67,6 +67,12 @@ export function extractProjectAssetRecords(projectId: string, kind: AssetKind) {
   });
 }
 
+export function extractProjectChapterAssets(projectId: string) {
+  return backendRequest<AssetReviewBundle>(`/api/projects/${encodeURIComponent(projectId)}/assets/extract/chapters`, {
+    method: "POST",
+  });
+}
+
 export interface UploadedAssetImage {
   id: string;
   label: string;

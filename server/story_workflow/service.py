@@ -325,6 +325,7 @@ async def run_workflow_all(project_id: str, body: RunWorkflowAllBody) -> list[Wo
                             chapterId=chapter_id,
                             executionMode=body.executionMode,
                             maxTokens=body.maxTokens,
+                            targetChapterCount=body.targetChapterCount,
                         ),
                     )
                     artifacts.append(artifact)
@@ -338,6 +339,7 @@ async def run_workflow_all(project_id: str, body: RunWorkflowAllBody) -> list[Wo
                 chapterId=body.chapterId,
                 executionMode=body.executionMode,
                 maxTokens=body.maxTokens,
+                targetChapterCount=body.targetChapterCount,
             ),
         )
         artifacts.append(artifact)
@@ -893,6 +895,7 @@ def build_node_variables(base: Path, script: str, artifacts: dict[str, WorkflowA
     current_block_plan = video_block_plan_text_for_scene(artifacts, selected_episode["episodeId"], selected_scene["sceneId"], body)
     return {
         "全集剧本": script,
+        "目标章节数": target_chapter_count_text(body.targetChapterCount),
         "当前章节剧本": chapter_script,
         "当前集剧本": selected_episode["text"],
         "当前场剧本": selected_scene["text"],
@@ -1032,6 +1035,18 @@ def build_user_prompt(node: WorkflowNode, variables: dict[str, str]) -> str:
     if node.id == "video_prompt":
         return "请根据当前分块规划中的 video_blocks 输出 video_prompts；只输出 JSON。"
     return "请根据系统提示输出结果。"
+
+
+def target_chapter_count_text(value: int | None) -> str:
+    if not value:
+        return "未指定"
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        return "未指定"
+    if count <= 0:
+        return "未指定"
+    return str(min(count, 99))
 
 
 def render_template(template: str, variables: dict[str, str]) -> str:

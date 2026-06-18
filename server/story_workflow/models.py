@@ -68,6 +68,7 @@ class RunWorkflowNodeBody(BaseModel):
     blockEnd: str | None = None
     executionMode: Literal["integrated", "separate"] = "separate"
     maxTokens: int | None = None
+    targetChapterCount: int | None = None
 
 
 class RunWorkflowAllBody(BaseModel):
@@ -78,6 +79,7 @@ class RunWorkflowAllBody(BaseModel):
     chapterIds: list[str] = Field(default_factory=list)
     executionMode: Literal["integrated", "separate"] = "separate"
     maxTokens: int | None = None
+    targetChapterCount: int | None = None
 
 
 class UpdateWorkflowArtifactBody(BaseModel):
