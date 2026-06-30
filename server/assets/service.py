@@ -44,6 +44,26 @@ ASSET_EXTRACT_CONFIG = {
     },
 }
 CHAPTER_ASSET_EXTRACT_PROMPT = "default:asset_extract_chapter/prompt.md"
+CHAPTER_ASSET_EXTRACT_CONFIG = {
+    "characters": {
+        "prompt": "default:asset_extract_chapter_characters/prompt.md",
+        "stage": "asset_extract_chapter_characters",
+        "label": "按章角色资产提取",
+        "root": "characters",
+    },
+    "scenes": {
+        "prompt": "default:asset_extract_chapter_scenes/prompt.md",
+        "stage": "asset_extract_chapter_scenes",
+        "label": "按章场景资产提取",
+        "root": "scenes",
+    },
+    "props": {
+        "prompt": "default:asset_extract_chapter_props/prompt.md",
+        "stage": "asset_extract_chapter_props",
+        "label": "按章道具资产提取",
+        "root": "props",
+    },
+}
 CHAPTER_ASSET_KIND_ROOTS = {
     "characters": "CHAR",
     "scenes": "SCENE",
@@ -344,8 +364,6 @@ async def extract_chapter_asset_records(root_path: Path, project_id: str) -> Ass
     if not any(episode["text"].strip() for episode in episodes):
         raise ValueError("当前项目没有可用于资产提取的剧本")
     chapter_refs = asset_chapter_refs(base, episodes)
-    prompt_detail = read_prompt(CHAPTER_ASSET_EXTRACT_PROMPT)
-    prompt = prompt_detail["content"]
     bundle = empty_asset_bundle()
     records: dict[str, list[dict[str, Any]]] = {kind: [] for kind in ASSET_KINDS}
     true_sources: dict[str, list[dict[str, Any]]] = {kind: [] for kind in ASSET_KINDS}
@@ -354,27 +372,32 @@ async def extract_chapter_asset_records(root_path: Path, project_id: str) -> Ass
         chapter_script = "\n\n".join(episode["text"] for episode in episodes if episode["episodeId"] in set(chapter_ref["episode_ids"]))
         if not chapter_script.strip():
             continue
-        system_prompt = render_asset_prompt(prompt, {
-            "当前章节编号": chapter_ref["chapter_id"],
-            "当前章节剧本": chapter_script,
-            "全局资产线索": global_clues,
-            "已有资产索引": asset_registry_index_text(true_sources),
-        })
-        response = await call_openai_compatible(
-            LlmChatRequest(
-                stageId="asset_extract_chapter",
-                label=f"章节资产提取 {chapter_ref['chapter_id']}",
-                promptId=prompt_detail.get("version", {}).get("id") or CHAPTER_ASSET_EXTRACT_PROMPT,
-                jsonMode=True,
-                maxTokens=12000,
-                messages=[
-                    ChatMessage(role="system", content=system_prompt),
-                    ChatMessage(role="user", content="请按系统提示词输出 JSON。"),
-                ],
-            )
-        )
-        chapter_records = parse_chapter_asset_records(response, chapter_ref["chapter_id"])
         for kind in ASSET_KINDS:
+            config = CHAPTER_ASSET_EXTRACT_CONFIG[kind]
+            prompt_detail = read_prompt(config["prompt"])
+            system_prompt = render_asset_prompt(
+                prompt_detail["content"],
+                {
+                    "当前章节编号": chapter_ref["chapter_id"],
+                    "当前章节剧本": chapter_script,
+                    "全局资产线索": global_clues,
+                    "已有资产索引": asset_registry_index_text({kind: true_sources[kind]}),
+                },
+            )
+            response = await call_openai_compatible(
+                LlmChatRequest(
+                    stageId=config["stage"],
+                    label=f"{config['label']} {chapter_ref['chapter_id']}",
+                    promptId=prompt_detail.get("version", {}).get("id") or config["prompt"],
+                    jsonMode=True,
+                    maxTokens=12000,
+                    messages=[
+                        ChatMessage(role="system", content=system_prompt),
+                        ChatMessage(role="user", content="请按系统提示词输出 JSON。"),
+                    ],
+                )
+            )
+            chapter_records = parse_chapter_asset_records(response, chapter_ref["chapter_id"], kind)
             for record in chapter_records[kind]:
                 merged = merge_chapter_asset_record(kind, record, true_sources[kind], chapter_ref["chapter_id"])
                 records[kind].append(merged["record"])
@@ -547,10 +570,18 @@ def asset_chapter_refs(base: Path, episodes: list[dict[str, str]]) -> list[dict[
 
 def asset_global_clues_text(base: Path) -> str:
     story_base = base / "artifacts" / "story_workflow"
+    chapter_base = story_base / "chapter_summary"
+    chapter_summaries = []
+    if chapter_base.exists():
+        for path in sorted(chapter_base.glob("chapter_summary_*.json")):
+            data = read_json(path, {})
+            if data:
+                chapter_summaries.append(data)
     clues = {
         "character_summary": read_json(story_base / "character_summary.json", {}),
         "continuity": read_json(story_base / "continuity.json", {}),
         "series_summary": read_json(story_base / "series_summary.json", {}),
+        "chapter_summaries": chapter_summaries,
     }
     compact = {key: value for key, value in clues.items() if value}
     if not compact:
@@ -631,7 +662,7 @@ def parse_asset_records(response: dict[str, Any], kind: str) -> list[dict[str, A
     return _normalize_list(rows)
 
 
-def parse_chapter_asset_records(response: dict[str, Any], chapter_id: str) -> dict[str, list[dict[str, Any]]]:
+def parse_chapter_asset_records(response: dict[str, Any], chapter_id: str, target_kind: str | None = None) -> dict[str, list[dict[str, Any]]]:
     content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
     if not isinstance(content, str):
         return {kind: [] for kind in ASSET_KINDS}
@@ -642,6 +673,11 @@ def parse_chapter_asset_records(response: dict[str, Any], chapter_id: str) -> di
     parsed = json.loads(content)
     if not isinstance(parsed, dict):
         return {kind: [] for kind in ASSET_KINDS}
+    if target_kind:
+        return {
+            kind: normalize_chapter_asset_rows(parsed.get(kind), kind, chapter_id) if kind == target_kind else []
+            for kind in ASSET_KINDS
+        }
     return {
         "characters": normalize_chapter_asset_rows(parsed.get("characters"), "characters", chapter_id),
         "scenes": normalize_chapter_asset_rows(parsed.get("scenes"), "scenes", chapter_id),
@@ -658,7 +694,7 @@ def normalize_chapter_asset_rows(rows: Any, kind: str, chapter_id: str) -> list[
         display_name = str(row.get("display_name") or row.get("name") or "").strip()
         if not display_name:
             continue
-        normalized.append({
+        base = {
             "chapter_id": chapter_id,
             "kind": kind,
             "action": action,
@@ -670,7 +706,40 @@ def normalize_chapter_asset_rows(rows: Any, kind: str, chapter_id: str) -> list[
             "version_note": limit_text(row.get("version_note"), 40),
             "evidence": limit_text(row.get("evidence"), 60),
             "aliases": normalize_aliases(row.get("aliases")),
-        })
+        }
+        if kind == "characters":
+            base.update({
+                "name": display_name,
+                "version_of": str(row.get("version_of") or row.get("base_name") or infer_asset_base_name(display_name)),
+                "appearance": str(row.get("appearance") or ""),
+                "outfit": str(row.get("outfit") or ""),
+                "first_seen": str(row.get("first_seen") or ""),
+                "trigger": str(row.get("trigger") or ""),
+                "appearance_source": str(row.get("appearance_source") or ""),
+                "plot_source": str(row.get("plot_source") or ""),
+            })
+        elif kind == "scenes":
+            base.update({
+                "name": display_name,
+                "visual_description": str(row.get("visual_description") or row.get("description") or ""),
+                "fixed_elements": str(row.get("fixed_elements") or ""),
+                "first_seen": str(row.get("first_seen") or ""),
+                "state_trigger": str(row.get("state_trigger") or ""),
+                "visual_source": str(row.get("visual_source") or ""),
+                "plot_source": str(row.get("plot_source") or ""),
+            })
+        else:
+            base.update({
+                "name": display_name,
+                "appearance": str(row.get("appearance") or row.get("description") or ""),
+                "holder_or_location": str(row.get("holder_or_location") or ""),
+                "state_changes": str(row.get("state_changes") or ""),
+                "first_seen": str(row.get("first_seen") or ""),
+                "plot_role": str(row.get("plot_role") or ""),
+                "appearance_source": str(row.get("appearance_source") or ""),
+                "plot_source": str(row.get("plot_source") or ""),
+            })
+        normalized.append(base)
     return normalized
 
 
@@ -679,7 +748,14 @@ def merge_chapter_asset_record(kind: str, record: dict[str, Any], rows: list[dic
     asset_id = str(record.get("asset_id") or "").strip()
     version_id = str(record.get("version_id") or "").strip()
     display_name = str(record.get("display_name") or "").strip()
-    existing_asset = find_asset_row(rows, asset_id, "")
+    existing_asset = find_asset_row(rows, asset_id, "") if asset_id else None
+    if not existing_asset and action != "create_asset" and kind == "characters":
+        existing_asset = find_asset_row_by_base_name(rows, str(record.get("version_of") or infer_asset_base_name(display_name)))
+    if not existing_asset and action != "create_asset" and kind in {"scenes", "props"}:
+        existing_asset = find_asset_row_by_display_name(rows, display_name, str(record.get("aliases") or ""))
+    if action == "create_asset" and existing_asset and looks_like_new_version(kind, record, existing_asset):
+        action = "create_version"
+        asset_id = str(existing_asset.get("asset_id") or existing_asset.get("id") or asset_id)
     if action == "use_existing" and version_id:
         existing_version = find_asset_row(rows, asset_id, version_id)
         if existing_version:
@@ -687,7 +763,8 @@ def merge_chapter_asset_record(kind: str, record: dict[str, Any], rows: list[dic
     if action == "create_version" and existing_asset:
         asset_id = str(existing_asset.get("asset_id") or existing_asset.get("id") or asset_id)
     elif not asset_id:
-        asset_id = build_asset_id(CHAPTER_ASSET_KIND_ROOTS[kind], display_name, display_name, len(rows))
+        asset_name = str(record.get("version_of") or display_name) if kind == "characters" else display_name
+        asset_id = build_asset_id(CHAPTER_ASSET_KIND_ROOTS[kind], asset_name, asset_name, len(rows))
     if not version_id:
         version_id = next_version_id(asset_id, rows)
     true_source = build_chapter_true_source(kind, record, asset_id, version_id, chapter_id)
@@ -700,6 +777,7 @@ def build_chapter_true_source(kind: str, record: dict[str, Any], asset_id: str, 
     asset_note = str(record.get("asset_note") or "")
     version_note = str(record.get("version_note") or "")
     evidence = str(record.get("evidence") or "")
+    first_seen = str(record.get("first_seen") or chapter_id)
     row = {
         "id": version_id,
         "asset_id": asset_id,
@@ -709,23 +787,46 @@ def build_chapter_true_source(kind: str, record: dict[str, Any], asset_id: str, 
         "description": asset_note,
         "version_note": version_note,
         "aliases": str(record.get("aliases") or ""),
-        "first_seen": chapter_id,
+        "first_seen": first_seen,
         "evidence": evidence,
         "image_prompt": "，".join(item for item in [display_name, asset_note, version_note] if item),
         "continuity": "保持资产与版本识别说明一致。",
         "status": "draft",
     }
     if kind == "characters":
-        row["base_name"] = display_name
-        row["appearance"] = version_note or asset_note
-        row["outfit"] = ""
+        appearance = str(record.get("appearance") or version_note or asset_note)
+        outfit = str(record.get("outfit") or "")
+        row["base_name"] = str(record.get("version_of") or infer_asset_base_name(display_name) or display_name)
+        row["appearance"] = appearance
+        row["outfit"] = outfit
+        row["trigger"] = str(record.get("trigger") or "")
+        row["appearance_source"] = str(record.get("appearance_source") or "")
+        row["plot_source"] = str(record.get("plot_source") or "")
+        row["description"] = asset_note or appearance
+        row["image_prompt"] = "，".join(item for item in [display_name, appearance, outfit] if item)
+        row["continuity"] = "保持同一版本的年龄感、发型、脸型、服装结构和关键配饰一致。"
     elif kind == "scenes":
-        row["fixed_elements"] = version_note
-        row["state_trigger"] = evidence
+        visual_description = str(record.get("visual_description") or asset_note)
+        fixed_elements = str(record.get("fixed_elements") or version_note)
+        row["description"] = visual_description
+        row["fixed_elements"] = fixed_elements
+        row["state_trigger"] = str(record.get("state_trigger") or "")
+        row["visual_source"] = str(record.get("visual_source") or "")
+        row["plot_source"] = str(record.get("plot_source") or "")
+        row["image_prompt"] = "，".join(item for item in [display_name, visual_description, fixed_elements] if item)
+        row["continuity"] = "保持空间结构、固定陈设、光源方向和可复用角度一致。"
     else:
-        row["appearance"] = version_note or asset_note
-        row["state_changes"] = version_note
-        row["plot_role"] = evidence
+        appearance = str(record.get("appearance") or version_note or asset_note)
+        state_changes = str(record.get("state_changes") or version_note)
+        row["description"] = "，".join(item for item in [appearance, state_changes] if item)
+        row["appearance"] = appearance
+        row["holder_or_location"] = str(record.get("holder_or_location") or "")
+        row["state_changes"] = state_changes
+        row["plot_role"] = str(record.get("plot_role") or "")
+        row["appearance_source"] = str(record.get("appearance_source") or "")
+        row["plot_source"] = str(record.get("plot_source") or "")
+        row["image_prompt"] = "，".join(item for item in [display_name, appearance] if item)
+        row["continuity"] = "保持外观、材质、尺寸、持有人和状态变化一致。"
     return row
 
 
@@ -739,6 +840,61 @@ def find_asset_row(rows: list[dict[str, Any]], asset_id: str, version_id: str) -
             continue
         return row
     return None
+
+
+def find_asset_row_by_base_name(rows: list[dict[str, Any]], base_name: str) -> dict[str, Any] | None:
+    normalized = normalize_asset_name(base_name)
+    if not normalized:
+        return None
+    for row in rows:
+        row_base = normalize_asset_name(str(row.get("base_name") or infer_asset_base_name(str(row.get("name") or ""))))
+        if row_base == normalized:
+            return row
+    return None
+
+
+def find_asset_row_by_display_name(rows: list[dict[str, Any]], display_name: str, aliases: str) -> dict[str, Any] | None:
+    candidates = {normalize_asset_name(display_name)}
+    candidates.update(normalize_asset_name(item) for item in normalize_aliases(aliases).split(",") if item)
+    candidates = {item for item in candidates if item}
+    if not candidates:
+        return None
+    for row in rows:
+        row_names = {normalize_asset_name(str(row.get("name") or ""))}
+        row_names.update(normalize_asset_name(item) for item in normalize_aliases(row.get("aliases")).split(",") if item)
+        if candidates & {item for item in row_names if item}:
+            return row
+    return None
+
+
+def looks_like_new_version(kind: str, record: dict[str, Any], existing: dict[str, Any]) -> bool:
+    if kind == "characters":
+        version_name = str(record.get("version_name") or "")
+        trigger = str(record.get("trigger") or record.get("plot_source") or "")
+        outfit = str(record.get("outfit") or "")
+        existing_outfit = str(existing.get("outfit") or "")
+        return bool(version_name and version_name != "默认版") or bool(trigger) or (bool(outfit) and outfit != existing_outfit)
+    if kind == "props":
+        version_name = str(record.get("version_name") or "")
+        state_changes = str(record.get("state_changes") or "")
+        appearance = str(record.get("appearance") or "")
+        existing_appearance = str(existing.get("appearance") or existing.get("description") or "")
+        state_keywords = "破碎|碎片|修复|烧毁|残缺|裂开|断裂|染血|完整|摔碎"
+        return bool(version_name and version_name != "默认版") or bool(re.search(state_keywords, state_changes + appearance)) or (bool(appearance) and appearance != existing_appearance)
+    version_name = str(record.get("version_name") or "")
+    state_trigger = str(record.get("state_trigger") or "")
+    visual = str(record.get("visual_description") or "")
+    existing_visual = str(existing.get("description") or "")
+    return bool(version_name and version_name != "默认版") or bool(state_trigger) or (bool(visual) and visual != existing_visual)
+
+
+def normalize_asset_name(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.split(r"[-－—_/（(]", text, maxsplit=1)[0].strip()
+    text = re.sub(r"(完整版|完整状态|破碎版|碎裂版|修复版|默认版|郡主装|常服|村姑装|华服|新衣服|房间|厢房)$", "", text).strip()
+    return re.sub(r"[\s,，、：:]+", "", text)
 
 
 def next_version_id(asset_id: str, rows: list[dict[str, Any]]) -> str:

@@ -185,11 +185,15 @@ export function AppNav({
   isCollapsed,
   setActivePage,
   onToggleCollapse,
+  onToggleLogs,
+  logIssueCount,
 }: {
   activePage: string;
   isCollapsed: boolean;
   setActivePage: (page: string) => void;
   onToggleCollapse: () => void;
+  onToggleLogs: () => void;
+  logIssueCount: number;
 }) {
   const items = [
     { id: "projects", label: "项目管理", icon: <FolderKanban size={18} /> },
@@ -221,12 +225,13 @@ export function AppNav({
           </button>
         ))}
       </div>
-      {!isCollapsed && (
-        <div className="nav-footnote">
-          <strong>本地项目</strong>
-          <span>已支持本地保存和多项目；后续接后端、diff 和回滚。</span>
-        </div>
-      )}
+      <div className="nav-footer-actions">
+        <button className="nav-log-toggle" onClick={onToggleLogs} title="展开执行反馈">
+          <Terminal size={18} />
+          {!isCollapsed && <span>详情</span>}
+          {!isCollapsed && logIssueCount > 0 && <em>{logIssueCount}</em>}
+        </button>
+      </div>
     </nav>
   );
 }

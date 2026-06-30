@@ -121,21 +121,14 @@ export function ScriptRuleConfigDialog({
                 {episodeSplitRules.map((rule, index) => (
                   <article key={rule.id} className="script-rule-item episode-rule-config-card">
                     <RuleIndex index={index + 1} enabled={rule.enabled} />
-                    <label className="rule-enabled">
+                    <label className="rule-enabled" title="启用">
                       <input type="checkbox" checked={rule.enabled} onChange={(event) => updateEpisodeRule(rule.id, { enabled: event.target.checked })} />
-                      启用
                     </label>
-                    <label>
-                      规则名
+                    <label title="规则名">
                       <input value={rule.name} onChange={(event) => updateEpisodeRule(rule.id, { name: event.target.value })} />
                     </label>
-                    <label className="rule-description">
-                      正则表达式
+                    <label className="rule-description" title="正则表达式">
                       <textarea value={rule.pattern} onChange={(event) => updateEpisodeRule(rule.id, { pattern: event.target.value })} spellCheck={false} />
-                    </label>
-                    <label className="rule-description">
-                      说明
-                      <textarea value={rule.description} onChange={(event) => updateEpisodeRule(rule.id, { description: event.target.value })} />
                     </label>
                   </article>
                 ))}
@@ -143,30 +136,22 @@ export function ScriptRuleConfigDialog({
             </RulePanel>
           ) : (
             <RulePanel title="正则校验规则" summary={`${rules.filter((rule) => rule.enabled).length} / ${rules.length} 启用`}>
-              <p className="rule-boundary-note">这里只保留稳定的程序检查；剧情理解、人物关系、逻辑一致性留给人工或 LLM 复核。</p>
               <div className="script-rule-list">
                 {rules.map((rule, index) => (
                   <article key={rule.id} className="script-rule-item">
                     <RuleIndex index={index + 1} enabled={rule.enabled} />
-                    <label className="rule-enabled">
+                    <label className="rule-enabled" title="启用">
                       <input type="checkbox" checked={rule.enabled} onChange={(event) => updateQualityRule(rule.id, { enabled: event.target.checked })} />
-                      启用
                     </label>
-                    <label>
-                      规则名
+                    <label title="规则名">
                       <input value={rule.name} onChange={(event) => updateQualityRule(rule.id, { name: event.target.value })} />
                     </label>
-                    <label>
-                      等级
+                    <label title="等级">
                       <select value={rule.level} onChange={(event) => updateQualityRule(rule.id, { level: event.target.value as ScriptQualityRule["level"] })}>
                         <option value="错误">错误</option>
                         <option value="警告">警告</option>
                         <option value="提示">提示</option>
                       </select>
-                    </label>
-                    <label className="rule-description">
-                      规则说明
-                      <textarea value={rule.description} onChange={(event) => updateQualityRule(rule.id, { description: event.target.value })} />
                     </label>
                   </article>
                 ))}
@@ -247,16 +232,42 @@ export function ScriptWorkspace({
   const [splitFileName, setSplitFileName] = useState(script ? "当前项目剧本" : "");
   const [selectedSplitIndex, setSelectedSplitIndex] = useState(0);
   const selectedEpisode = analysis.episodes.find((episode) => episode.episodeId === selectedScriptEpisodeId) ?? analysis.episodes[0];
-  const selectedReport = useMemo(() => buildScriptQualityReport(selectedEpisode?.sourceText ?? "", rules), [selectedEpisode?.sourceText, rules]);
+  const episodeReports = useMemo(
+    () =>
+      analysis.episodes.map((episode, episodeIndex) => ({
+        episode,
+        episodeIndex,
+        report: buildScriptQualityReport(episode.sourceText, rules),
+      })),
+    [analysis.episodes, rules],
+  );
+  const selectedReport = episodeReports.find((item) => item.episode.episodeId === selectedEpisode?.episodeId)?.report ?? buildScriptQualityReport(selectedEpisode?.sourceText ?? "", rules);
+  const allIssueEntries = useMemo(
+    () =>
+      episodeReports.flatMap(({ episode, episodeIndex, report }) =>
+        report.issues.map((issue) => ({
+          episodeId: episode.episodeId,
+          episodeIndex,
+          issue,
+        })),
+      ),
+    [episodeReports],
+  );
   const selectedIssueCounts = countIssueLevels(selectedReport.issues);
   const selectedIssueScope = selectedEpisode?.episodeId ?? "";
   const resolvedCount = selectedReport.issues.filter((issue) => getIssueStatus(issueStatuses, issue, selectedIssueScope) === "resolved").length;
   const ignoredCount = selectedReport.issues.filter((issue) => getIssueStatus(issueStatuses, issue, selectedIssueScope) === "ignored").length;
   const openCount = selectedReport.issues.length - resolvedCount - ignoredCount;
-  const checkedEpisodeCount = analysis.episodes.filter((episode) => buildScriptQualityReport(episode.sourceText, rules).issues.length === 0).length;
+  const checkedEpisodeCount = episodeReports.filter((item) => item.report.issues.length === 0).length;
   const selectedEpisodeIndex = Math.max(0, analysis.episodes.findIndex((episode) => episode.episodeId === selectedEpisode?.episodeId));
   const splitPreview = useMemo(() => splitScriptIntoEpisodes(splitSource, episodeSplitRules), [splitSource, episodeSplitRules]);
   const activeSplitEpisode = splitPreview.episodes[selectedSplitIndex] ?? splitPreview.episodes[0];
+  const selectedIssueIndex = useMemo(() => {
+    if (!allIssueEntries.length || !selectedEpisode) return -1;
+    const exactIndex = allIssueEntries.findIndex((entry) => entry.episodeId === selectedEpisode.episodeId && entry.issue.line === activeIssueLine);
+    if (exactIndex >= 0) return exactIndex;
+    return allIssueEntries.findIndex((entry) => entry.episodeId === selectedEpisode.episodeId);
+  }, [allIssueEntries, activeIssueLine, selectedEpisode]);
 
   useEffect(() => {
     setStage(loadStage(storageSuffix));
@@ -314,6 +325,22 @@ export function ScriptWorkspace({
 
   function runScriptCheck() {
     onRunScriptCheck();
+    setStage("quality");
+  }
+
+  function navigateIssue(direction: "previous" | "next") {
+    if (!allIssueEntries.length) return;
+    let nextIndex = selectedIssueIndex;
+    if (nextIndex < 0) {
+      nextIndex = direction === "next" ? 0 : allIssueEntries.length - 1;
+    } else {
+      nextIndex = direction === "next" ? Math.min(nextIndex + 1, allIssueEntries.length - 1) : Math.max(nextIndex - 1, 0);
+    }
+    const nextIssue = allIssueEntries[nextIndex];
+    if (!nextIssue) return;
+    setIssueFilter("all");
+    setSelectedScriptEpisodeId(nextIssue.episodeId);
+    setActiveIssueLine(nextIssue.issue.line);
     setStage("quality");
   }
 
@@ -426,8 +453,10 @@ export function ScriptWorkspace({
               episodes={analysis.episodes}
               selectedEpisodeId={selectedEpisode?.episodeId ?? ""}
               rules={rules}
-              issueStatuses={issueStatuses}
-              onSelect={setSelectedScriptEpisodeId}
+              onSelect={(episodeId) => {
+                setSelectedScriptEpisodeId(episodeId);
+                setActiveIssueLine(null);
+              }}
             />
             <section className="script-current-panel panel">
               <div className="script-current-title">
@@ -461,6 +490,8 @@ export function ScriptWorkspace({
               onIssueStatusChange={updateIssueStatus}
               onResetStatuses={resetIssueStatuses}
               onExportIssues={exportIssues}
+              onNavigateIssue={navigateIssue}
+              issueNavigation={{ currentIndex: selectedIssueIndex, total: allIssueEntries.length }}
             />
           </div>
         </>
@@ -834,13 +865,11 @@ function EpisodeListPanel({
   episodes,
   selectedEpisodeId,
   rules,
-  issueStatuses,
   onSelect,
 }: {
   episodes: EpisodeResult[];
   selectedEpisodeId: string;
   rules: ScriptQualityRule[];
-  issueStatuses: IssueStatusMap;
   onSelect: (episodeId: string) => void;
 }) {
   return (
@@ -853,12 +882,11 @@ function EpisodeListPanel({
       <aside className="episode-rail panel" aria-label="分集导航">
         {episodes.map((episode) => {
           const issues = buildScriptQualityReport(episode.sourceText, rules).issues;
-          const openIssues = issues.filter((issue) => getIssueStatus(issueStatuses, issue, episode.episodeId) === "open");
+          const hasIssues = issues.length > 0;
           return (
-            <button key={episode.episodeId} className={episode.episodeId === selectedEpisodeId ? "active" : ""} title={`${episode.title} / ${episode.characterCount.toLocaleString()} 字`} onClick={() => onSelect(episode.episodeId)}>
+            <button key={episode.episodeId} className={[episode.episodeId === selectedEpisodeId ? "active" : "", hasIssues ? "has-issue" : ""].filter(Boolean).join(" ")} title={`${episode.title} / ${episode.characterCount.toLocaleString()} 字`} onClick={() => onSelect(episode.episodeId)}>
               <strong>{episode.episodeId.replace(/^EP0?/, "第")}集</strong>
               <span>{episode.characterCount.toLocaleString()} 字</span>
-              <em>{openIssues.length ? `${openIssues.length} 问题` : "正常"}</em>
             </button>
           );
         })}
@@ -881,6 +909,8 @@ function ScriptQualityView({
   onIssueStatusChange,
   onResetStatuses,
   onExportIssues,
+  onNavigateIssue,
+  issueNavigation,
 }: {
   report: ReturnType<typeof buildScriptQualityReport>;
   episodeId: string;
@@ -894,6 +924,8 @@ function ScriptQualityView({
   onIssueStatusChange: (issue: ScriptIssue, status: IssueStatus) => void;
   onResetStatuses: () => void;
   onExportIssues: () => void;
+  onNavigateIssue: (direction: "previous" | "next") => void;
+  issueNavigation: { currentIndex: number; total: number };
 }) {
   const filteredIssues = report.issues.filter((issue) => {
     const status = getIssueStatus(issueStatuses, issue, issueStatusScope);
@@ -915,6 +947,17 @@ function ScriptQualityView({
         <FilterButton label="警告" count={issueCounts.warnings} active={issueFilter === "警告"} onClick={() => onFilterChange("警告")} />
         <FilterButton label="提示" count={issueCounts.hints} active={issueFilter === "提示"} onClick={() => onFilterChange("提示")} />
         <FilterButton label="未处理" count={issueCounts.open} active={issueFilter === "open"} onClick={() => onFilterChange("open")} />
+      </div>
+      <div className="script-issue-nav">
+        <button onClick={() => onNavigateIssue("previous")} disabled={!issueNavigation.total}>
+          上一条
+        </button>
+        <span>
+          {issueNavigation.total ? `${Math.max(issueNavigation.currentIndex + 1, 1)} / ${issueNavigation.total}` : "0 / 0"}
+        </span>
+        <button onClick={() => onNavigateIssue("next")} disabled={!issueNavigation.total}>
+          下一条
+        </button>
       </div>
       <div className="issue-list">
         {filteredIssues.length === 0 ? (

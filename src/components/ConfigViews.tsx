@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, ClipboardList, Edit3, Eye, Image, Play, Plus, RefreshCcw, Save, SlidersHorizontal, Sparkles, Terminal, Trash2, X } from "lucide-react";
+import { CheckCircle2, ClipboardList, Edit3, Eye, Image, Layers3, Play, RefreshCcw, Save, SlidersHorizontal, Sparkles, Terminal, Trash2, X } from "lucide-react";
 import { ImageApiHealthPanel, RunHealthPanel } from "./HealthPanels";
 import { getBackendPromptDescription, getBackendPromptTitle } from "../lib/promptStageCopy";
 import { getBackendImageApiKey, getBackendLlmApiKey, type BackendHealth, type BackendSettings, type BackendLlmLog, type BackendPromptLibrary, type BackendPromptTemplateGroup, type BackendPromptVersion, type ImageProviderCatalog } from "../lib/backendStatusApi";
@@ -433,32 +433,17 @@ function BackendPromptTemplatePanel({
 
   return (
     <article className="panel prompt-template-panel">
-      <div className="panel-title">
-        <Edit3 size={18} />
-        <span>提示词模板</span>
-        <strong>{library.groups.length} 个模板 / {library.groups.reduce((count, group) => count + 1 + group.userVersions.length, 0)} 个版本</strong>
-      </div>
       <div className="prompt-template-layout">
-        <aside className="prompt-template-sidebar">
-          <div className="compact-section-title">
-            <strong>模板分类</strong>
-            <span>按执行用途归类</span>
-          </div>
+        <nav className="prompt-template-tabs" aria-label="模板分类">
           {categories.map((category) => (
             <button key={category.id} className={category.id === activeCategoryId ? "active" : ""} onClick={() => setActiveCategoryId(category.id)}>
               <strong>{category.title}</strong>
-              <span>{category.groups.length} 个模板</span>
             </button>
           ))}
-        </aside>
+        </nav>
 
-        <section className="prompt-template-list">
-          <div className="compact-section-title">
-            <strong>{activeCategory?.title ?? "模板"}</strong>
-            <span>选择要配置的 Prompt</span>
-          </div>
+        <nav className="prompt-template-tabs prompt-template-tabs-secondary" aria-label={`${activeCategory?.title ?? "模板"}模板`}>
           {visibleGroups.map((group) => {
-            const current = [group.official, ...group.userVersions].find((version) => version.id === group.activeVersionId) ?? group.official;
             return (
               <button
                 key={group.prompt.id}
@@ -466,88 +451,81 @@ function BackendPromptTemplatePanel({
                 onClick={() => setSelectedPromptId(group.prompt.id)}
               >
                 <strong>{getBackendPromptTitle(group.prompt.stage)}</strong>
-                <span>{getBackendPromptDescription(group.prompt.stage)}</span>
-                <small>当前：{current.name}</small>
-                <small>{group.prompt.stage} / {group.prompt.name}.md</small>
               </button>
             );
           })}
           {!visibleGroups.length && <div className="empty-state">当前分类暂无模板。</div>}
-        </section>
+        </nav>
 
-        <section className="prompt-template-editor">
+        <section className="prompt-template-workbench">
           {selectedGroup && draft ? (
             <>
-              <div className="prompt-editor-top">
-                <div>
-                  <strong>{getBackendPromptTitle(selectedGroup.prompt.stage)}</strong>
-                  <p>{getBackendPromptDescription(selectedGroup.prompt.stage)}</p>
-                  <small>{selectedGroup.prompt.id}</small>
+              <aside className="prompt-version-nav">
+                <div className="compact-section-title">
+                  <strong>版本</strong>
+                  <span>{versions.length} 个</span>
                 </div>
-                <label>
-                  版本
-                  <select value={selectedVersion?.id ?? ""} onChange={(event) => setSelectedVersionId(event.target.value)}>
-                    {versions.map((version) => (
-                      <option key={version.id} value={version.id}>
-                        {formatPromptVersionLabel(version)}{version.id === selectedGroup.activeVersionId ? "（当前）" : ""}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-
-              <div className="prompt-version-toolbar">
-                <span className={`prompt-version-badge ${draft.readonly ? "official" : "user"}`}>{draft.readonly ? "官方只读" : "用户版本"}</span>
-                <span>当前启用：{activeVersion?.name ?? "官方版本"}</span>
-                <button onClick={createUserVersion}>
-                  <Plus size={16} />
-                  新建用户版本
-                </button>
-                <button onClick={() => onActivateVersion(selectedGroup.prompt.id, draft.id)} disabled={draft.id === selectedGroup.activeVersionId}>
-                  <CheckCircle2 size={16} />
-                  设为当前
-                </button>
-              </div>
-
-              <div className="prompt-field-grid">
-                <label>
-                  版本名称
-                  <input value={draft.name} readOnly={draft.readonly} onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
-                </label>
-                <label>
-                  说明
-                  <input value={draft.description} readOnly={draft.readonly} onChange={(event) => setDraft({ ...draft, description: event.target.value })} />
-                </label>
-              </div>
-
-              <div className="prompt-variable-row">
-                <span>变量</span>
-                {(draft.variables.length ? draft.variables : selectedGroup.prompt.variables).map((variable) => (
-                  <code key={variable}>{`{{${variable}}}`}</code>
+                {versions.map((version) => (
+                  <button
+                    key={version.id}
+                    className={version.id === selectedVersion?.id ? "active" : ""}
+                    onClick={() => setSelectedVersionId(version.id)}
+                  >
+                    <Layers3 size={15} />
+                    <span>
+                      <strong>{formatPromptVersionLabel(version)}</strong>
+                    </span>
+                  </button>
                 ))}
-                {!draft.variables.length && !selectedGroup.prompt.variables.length && <small>无变量</small>}
-              </div>
+              </aside>
 
-              <label className="prompt-content-editor">
-                Prompt 内容
-                <textarea
-                  value={draft.content}
-                  readOnly={draft.readonly}
-                  onChange={(event) => setDraft({ ...draft, content: event.target.value })}
-                  spellCheck={false}
-                />
-              </label>
+              <section className="prompt-template-editor">
+                <div className="prompt-editor-top">
+                  <div className="prompt-editor-active">
+                    <span className="prompt-version-badge active-version">
+                      当前启用 <strong>{activeVersion?.name ?? "官方版本"}</strong>
+                    </span>
+                    <label className="prompt-inline-field prompt-inline-name">
+                      <span>版本名称</span>
+                      <input value={draft.name} readOnly={draft.readonly} onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
+                    </label>
+                    <label className="prompt-variable-inline">
+                      <span>变量</span>
+                      <div className="prompt-variable-row">
+                        {(draft.variables.length ? draft.variables : selectedGroup.prompt.variables).map((variable) => (
+                          <code key={variable}>{`{{${variable}}}`}</code>
+                        ))}
+                        {!draft.variables.length && !selectedGroup.prompt.variables.length && <small>无变量</small>}
+                      </div>
+                    </label>
+                  </div>
+                </div>
 
-              <div className="config-actions">
-                <button className="primary-button" onClick={saveDraft} disabled={draft.readonly}>
-                  <Save size={16} />
-                  保存版本
-                </button>
-                <button onClick={deleteDraft} disabled={draft.readonly}>
-                  <Trash2 size={16} />
-                  删除版本
-                </button>
-              </div>
+                <div className="prompt-version-toolbar">
+                  <button onClick={() => onActivateVersion(selectedGroup.prompt.id, draft.id)} disabled={draft.id === selectedGroup.activeVersionId}>
+                    <CheckCircle2 size={16} />
+                    设为当前
+                  </button>
+                  <button className="primary-button" onClick={saveDraft} disabled={draft.readonly}>
+                    <Save size={16} />
+                    保存版本
+                  </button>
+                  <button className="danger-right" onClick={deleteDraft} disabled={draft.readonly}>
+                    <Trash2 size={16} />
+                    删除版本
+                  </button>
+                </div>
+
+                <label className="prompt-content-editor">
+                  Prompt 内容
+                  <textarea
+                    value={draft.content}
+                    readOnly={draft.readonly}
+                    onChange={(event) => setDraft({ ...draft, content: event.target.value })}
+                    spellCheck={false}
+                  />
+                </label>
+              </section>
             </>
           ) : (
             <div className="empty-state">后端还没有可配置的提示词模板。</div>

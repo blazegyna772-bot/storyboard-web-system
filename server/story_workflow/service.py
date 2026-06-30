@@ -178,7 +178,7 @@ async def run_workflow_node(project_id: str, body: RunWorkflowNodeBody) -> Workf
     state = get_workflow_state(project_id)
     context_artifacts = workflow_artifacts_for_context(base, state.artifacts, body.episodeId, body.sceneId)
     variables = build_node_variables(base, project.script, context_artifacts, body)
-    input_summary = summarize_variables_for_log(variables)
+    input_summary = summarize_variables_for_log(variables, node)
     chapter_ref = select_chapter_ref(
         context_artifacts,
         split_project_script(project.script),
@@ -1357,18 +1357,19 @@ def parse_json_text(text: str) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {"items": parsed}
 
 
-def summarize_variables_for_log(variables: dict[str, str]) -> str:
-    keys = [
-        "全集剧本",
-        "当前章节剧本",
-        "当前集剧本",
-        "当前场剧本",
-        "全集概要",
-        "当前章节概要",
-        "当前单集概要",
-        "当前场次概要",
-        "当前分块规划",
-    ]
+def summarize_variables_for_log(variables: dict[str, str], node: WorkflowNode) -> str:
+    keys_by_node = {
+        "story_map": ["全集剧本", "目标章节数"],
+        "character_summary": ["全集剧本", "剧情地图"],
+        "continuity": ["全集剧本", "剧情地图"],
+        "series_summary": ["剧情地图", "角色概要", "信息连续性"],
+        "chapter_summary": ["当前章节剧本", "全集概要"],
+        "episode_summary": ["当前集剧本", "当前章节概要", "前后集概要"],
+        "scene_summary": ["当前场剧本", "当前单集概要", "前后场概要"],
+        "storyboard_design": ["当前场剧本", "当前场次概要", "资产真源"],
+        "video_prompt": ["当前分块规划", "当前场次概要", "上一块视频提示词", "资产真源"],
+    }
+    keys = keys_by_node.get(node.id, [])
     return " / ".join(f"{key}:{len(variables.get(key, ''))}字" for key in keys if variables.get(key))
 
 

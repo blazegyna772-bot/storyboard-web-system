@@ -196,6 +196,7 @@ function App() {
     createDevLog("stage:01", "success", "剧本校验规则可用", "scriptQualityReport 已在前端实时计算。"),
     createDevLog("stage:02", "info", "生产流程可用", "当前流程：剧本统筹、资产审阅、分镜统筹、视频生成。"),
   ]);
+  const devLogIssueCount = devLogs.filter((log) => log.level === "warning" || log.level === "error").length;
   const scriptQuality = useMemo(() => buildScriptQualityReport(script, scriptQualityRules), [script, scriptQualityRules]);
   const currentScriptText = useMemo(() => serializeAnalysisScript(analysis), [analysis]);
 
@@ -600,10 +601,13 @@ function App() {
 
   async function handleExtractChapterAssets() {
     if (!activeProject.projectId || runningAssetExtractKinds.includes("chapters")) return;
+    const projectId = activeProject.projectId;
     setRunningAssetExtractKinds((current) => current.includes("chapters") ? current : [...current, "chapters"]);
     appendLog("asset-review", "info", "开始按章节提取资产", "按剧情结构图章节顺序执行，写入 records 与 true_sources。");
     try {
-      const bundle = normalizeAssetReviewBundle(await extractProjectChapterAssets(activeProject.projectId));
+      await extractProjectChapterAssets(projectId);
+      const bundle = normalizeAssetReviewBundle(await loadProjectAssetReview(projectId));
+      if (projectId !== activeProject.projectId) return;
       setAssetReviewBundle(bundle);
       setIsAssetReviewDirty(false);
       void refreshBackendStatus();
@@ -1063,6 +1067,8 @@ function App() {
             isCollapsed={isCollapsed}
             setActivePage={setActivePage}
             onToggleCollapse={() => setIsNavCollapsed(isCollapsed ? "false" : "true")}
+            onToggleLogs={() => setIsLogCollapsed(isLogCollapsed === "true" ? "false" : "true")}
+            logIssueCount={devLogIssueCount}
           />
         </aside>
 
@@ -1280,12 +1286,13 @@ function App() {
           onConfirm={() => removeProjectRootAuthorization(rootPendingRemove)}
         />
       )}
-      <DevLogPanel
-        logs={devLogs}
-        isCollapsed={isLogCollapsed === "true"}
-        onToggle={() => setIsLogCollapsed(isLogCollapsed === "true" ? "false" : "true")}
-        onClear={() => setDevLogs([createDevLog("pipeline", "info", "日志已清空")])}
-      />
+      {isLogCollapsed !== "true" && (
+        <DevLogPanel
+          logs={devLogs}
+          onToggle={() => setIsLogCollapsed("true")}
+          onClear={() => setDevLogs([createDevLog("pipeline", "info", "日志已清空")])}
+        />
+      )}
     </main>
   );
 }

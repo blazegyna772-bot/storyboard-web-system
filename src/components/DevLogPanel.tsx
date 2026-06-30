@@ -25,12 +25,10 @@ export function createDevLog(source: string, level: DevLogLevel, message: string
 
 export function DevLogPanel({
   logs,
-  isCollapsed,
   onToggle,
   onClear,
 }: {
   logs: DevLogEntry[];
-  isCollapsed: boolean;
   onToggle: () => void;
   onClear: () => void;
 }) {
@@ -45,7 +43,7 @@ export function DevLogPanel({
   });
 
   return (
-    <section className={isCollapsed ? "dev-feedback collapsed" : "dev-feedback"} aria-label="执行反馈">
+    <section className="dev-feedback" aria-label="执行反馈">
       <div className="feedback-bar">
         <div className="feedback-primary">
           <Terminal size={16} />
@@ -54,43 +52,41 @@ export function DevLogPanel({
         </div>
         <div className="feedback-actions">
           {issueCount > 0 && <span className="issue-pill">{issueCount} 条需看</span>}
-          <button onClick={onToggle}>{isCollapsed ? "详情" : "收起"}</button>
+          <button onClick={onToggle}>收起</button>
         </div>
       </div>
-      {!isCollapsed && (
-        <div className="feedback-details">
-          <div className="feedback-summary">
-            <div>
-              <strong>排查日志</strong>
-              <span>用于开发阶段定位规则、管线、LLM 调用和人工修改问题。</span>
-            </div>
-            <label>
-              搜索
-              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="stage、错误、产物、耗时..." />
-            </label>
-            <div className="feedback-filter-row">
-              <button className={!showIssuesOnly ? "active" : ""} onClick={() => setShowIssuesOnly(false)}>
-                全部 {logs.length}
-              </button>
-              <button className={showIssuesOnly ? "active" : ""} onClick={() => setShowIssuesOnly(true)}>
-                问题 {issueCount}
-              </button>
-            </div>
-            <button onClick={onClear}>清空</button>
+      <div className="feedback-details">
+        <div className="feedback-summary">
+          <div>
+            <strong>排查日志</strong>
+            <span>用于开发阶段定位规则、管线、LLM 调用和人工修改问题。</span>
           </div>
-          <div className="feedback-log-list">
-            {filteredLogs.map((log) => (
-              <article key={log.id} className={`feedback-log-item ${log.level}`}>
-                <span>{log.time}</span>
-                <strong>{log.source}</strong>
-                <p>{log.message}</p>
-                {log.detail && <small>{log.detail}</small>}
-              </article>
-            ))}
-            {!filteredLogs.length && <div className="empty-state">没有匹配的日志。</div>}
+          <label>
+            搜索
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="stage、错误、产物、耗时..." />
+          </label>
+          <div className="feedback-filter-row">
+            <button className={!showIssuesOnly ? "active" : ""} onClick={() => setShowIssuesOnly(false)}>
+              全部 {logs.length}
+            </button>
+            <button className={showIssuesOnly ? "active" : ""} onClick={() => setShowIssuesOnly(true)}>
+              问题 {issueCount}
+            </button>
           </div>
+          <button onClick={onClear}>清空</button>
         </div>
-      )}
+        <div className="feedback-log-list">
+          {filteredLogs.map((log) => (
+            <article key={log.id} className={`feedback-log-item ${log.level}`}>
+              <span>{log.time}</span>
+              <strong>{log.source}</strong>
+              <p>{log.message}</p>
+              {log.detail && <small>{log.detail}</small>}
+            </article>
+          ))}
+          {!filteredLogs.length && <div className="empty-state">没有匹配的日志。</div>}
+        </div>
+      </div>
     </section>
   );
 }

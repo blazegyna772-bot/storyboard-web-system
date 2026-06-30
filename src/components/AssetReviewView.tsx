@@ -353,29 +353,28 @@ function AssetCardList({
   const selectedRelatedRecords = selectedRow ? findRelatedRecords(kind, selectedRow, records) : [];
   const selectedCandidates = selectedRow ? getAssetImageCandidates(selectedRow) : [];
   const selectedCandidate = selectedCandidates.find((candidate) => candidate.url === selectedCandidateUrl) ?? null;
-  const selectedVersionName = selectedRow
-    ? kind === "characters"
-      ? selectedRow.name || ""
-      : selectedRow.name || ""
-    : "";
+  const selectedVersionName = selectedRow ? getAssetVersionDisplayValue(kind, selectedRow) : "";
   const selectedAssetId = selectedRow?.id || selectedRow?.name || "asset";
   const isSelectedGenerating = generatingAssetIds.includes(selectedAssetId);
+  const sortedRows = buildAssetDisplayRows(rows, kind);
 
   return (
     <section className="asset-review-split">
       <section className="asset-table-workbench asset-list-workbench">
         <div className="asset-table-head asset-list-head" role="row">
           <span>已选图片</span>
-          <span>资产信息</span>
+          <span>资产主体</span>
           <span>当前版本</span>
-          <span>{kind === "characters" ? "角色摘要" : "资产摘要"}</span>
+          <span>摘要</span>
         </div>
-        {rows.map((row, rowIndex) => {
-          const baseName = kind === "characters" ? row.base_name || inferBaseName(row.name) : row.name || "";
-          const groupIndex = getAssetGroupIndex(rows, row, kind);
-          const isSubVersion = kind === "characters" && rows.findIndex((item) => (item.base_name || inferBaseName(item.name)) === baseName) !== rowIndex;
+        {sortedRows.map(({ row, rowIndex }) => {
+          const groupIndex = getAssetGroupIndex(sortedRows.map((item) => item.row), row, kind);
+          const isSubVersion = sortedRows.findIndex((item) => getAssetGroupKey(item.row, kind) === getAssetGroupKey(row, kind)) !== sortedRows.findIndex((item) => item.rowIndex === rowIndex);
           const selectedImage = row.selected_image || row.image_url || row.image_path || "";
           const selectedImageUrl = withImageVersion(selectedImage, row.image_updated_at);
+          const identityField = getAssetIdentityField(kind);
+          const identityValue = getAssetIdentityDisplayValue(kind, row);
+          const versionValue = getAssetVersionDisplayValue(kind, row);
           return (
             <article
               className={`asset-table-row asset-list-row ${isSubVersion ? "sub-version" : ""} ${selectedRowIndex === rowIndex ? "selected" : ""}`}
@@ -404,10 +403,10 @@ function AssetCardList({
               <div className="asset-cell asset-info-cell">
                 <input
                   className="asset-base-input"
-                  value={kind === "characters" ? row.base_name ?? "" : row.name ?? ""}
+                  value={identityValue}
                   onClick={(event) => event.stopPropagation()}
-                  onChange={(event) => updateCell(rowIndex, kind === "characters" ? "base_name" : "name", event.target.value)}
-                  placeholder={kind === "characters" ? "基础角色" : `${assetKindLabel(kind)}名称`}
+                  onChange={(event) => updateCell(rowIndex, identityField, event.target.value)}
+                  placeholder={`${assetKindLabel(kind)}主体名称`}
                 />
                 <div className="asset-info-badges">
                   <span className="asset-type-badge">{assetKindLabel(kind)}</span>
@@ -423,10 +422,10 @@ function AssetCardList({
               <div className="asset-cell asset-version-cell">
                 <input
                   className="asset-version-input"
-                  value={row.name ?? ""}
+                  value={versionValue}
                   onClick={(event) => event.stopPropagation()}
-                  onChange={(event) => updateCell(rowIndex, "name", event.target.value)}
-                  placeholder={`${assetKindLabel(kind)}名称`}
+                  onChange={(event) => updateCell(rowIndex, "version_name", event.target.value)}
+                  placeholder="默认版"
                 />
               </div>
 
@@ -461,7 +460,7 @@ function AssetCardList({
 
           <label className="asset-detail-field">
             <span>当前版本</span>
-            <input value={selectedVersionName} onChange={(event) => updateSelectedCell("name", event.target.value)} />
+            <input value={selectedVersionName} onChange={(event) => updateSelectedCell("version_name", event.target.value)} />
           </label>
 
           <label className="asset-detail-field asset-prompt-editor">
@@ -742,6 +741,29 @@ function inferBaseName(name = "") {
   return name.split(/[-－—_]/)[0]?.trim() || "";
 }
 
+function getAssetIdentityField(kind: AssetKind) {
+  return kind === "characters" ? "base_name" : "name";
+}
+
+function getAssetIdentityDisplayValue(kind: AssetKind, row: Record<string, string>) {
+  if (kind === "characters") return row.base_name || inferBaseName(row.name) || "";
+  return row.name || row.display_name || "";
+}
+
+function getAssetVersionDisplayValue(kind: AssetKind, row: Record<string, string>) {
+  const versionName = row.version_name?.trim();
+  if (versionName) return versionName;
+  if (kind === "characters") return inferAssetVersionLabel(row.name, getAssetIdentityDisplayValue(kind, row)) || row.name || "默认版";
+  return inferAssetVersionLabel(row.name, getAssetIdentityDisplayValue(kind, row)) || "默认版";
+}
+
+function inferAssetVersionLabel(name = "", baseName = "") {
+  if (!name.trim()) return "";
+  if (baseName && name.trim() === baseName.trim()) return "默认版";
+  if (baseName && name.startsWith(baseName)) return name.slice(baseName.length).replace(/^[-－—_\s/]+/, "").trim();
+  return "";
+}
+
 function formatAssetDescription(kind: AssetKind, row: Record<string, string>) {
   if (kind === "characters") return [row.appearance, row.outfit].filter(Boolean).join("\n");
   return row.description ?? "";
@@ -776,9 +798,57 @@ function splitAliases(value = "") {
   return value.split(/[,，、/]/).map((item) => item.trim()).filter(Boolean);
 }
 
+function buildAssetDisplayRows(rows: Record<string, string>[], kind: AssetKind) {
+  const groupOrder = new Map<string, number>();
+  rows.forEach((row, index) => {
+    const groupKey = getAssetGroupKey(row, kind);
+    if (!groupOrder.has(groupKey)) groupOrder.set(groupKey, index);
+  });
+  return rows
+    .map((row, rowIndex) => ({ row, rowIndex }))
+    .sort((left, right) => {
+      const leftGroup = getAssetGroupKey(left.row, kind);
+      const rightGroup = getAssetGroupKey(right.row, kind);
+      if (leftGroup !== rightGroup) return (groupOrder.get(leftGroup) ?? left.rowIndex) - (groupOrder.get(rightGroup) ?? right.rowIndex);
+      const leftVersion = getAssetVersionSortKey(left.row);
+      const rightVersion = getAssetVersionSortKey(right.row);
+      if (leftVersion !== rightVersion) return compareAssetText(leftVersion, rightVersion);
+      return left.rowIndex - right.rowIndex;
+    });
+}
+
+function getAssetGroupKey(row: Record<string, string>, kind: AssetKind) {
+  if (kind === "characters") {
+    return normalizeAssetSortKey(row.asset_id || row.base_name || inferBaseName(row.name) || row.name || row.id);
+  }
+  return normalizeAssetSortKey(row.asset_id || row.name || row.id);
+}
+
+function getAssetVersionSortKey(row: Record<string, string>) {
+  return [
+    normalizeVersionNumber(row.version_id || row.id),
+    normalizeAssetSortKey(row.first_seen),
+    normalizeAssetSortKey(row.version_name),
+    normalizeAssetSortKey(row.name),
+  ].join("|");
+}
+
+function normalizeVersionNumber(value = "") {
+  const match = value.match(/(?:_v|v)(\d+)$/i);
+  return match ? match[1].padStart(6, "0") : "999999";
+}
+
+function normalizeAssetSortKey(value = "") {
+  return value.trim().toLocaleLowerCase("zh-Hans-CN");
+}
+
+function compareAssetText(left: string, right: string) {
+  return left.localeCompare(right, "zh-Hans-CN", { numeric: true, sensitivity: "base" });
+}
+
 function getAssetGroupIndex(rows: Record<string, string>[], row: Record<string, string>, kind: AssetKind) {
-  const key = kind === "characters" ? row.base_name || inferBaseName(row.name) || row.name : row.name;
-  const groups = Array.from(new Set(rows.map((item) => (kind === "characters" ? item.base_name || inferBaseName(item.name) || item.name : item.name))));
+  const key = getAssetGroupKey(row, kind);
+  const groups = Array.from(new Set(rows.map((item) => getAssetGroupKey(item, kind))));
   return Math.max(0, groups.indexOf(key));
 }
 

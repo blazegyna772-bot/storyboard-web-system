@@ -32,7 +32,9 @@ def get_llm_log(log_id: str) -> dict[str, Any] | None:
 
 
 def append_llm_log(entry: dict[str, Any]) -> dict[str, Any]:
-    logs = list_llm_logs(MAX_LLM_LOGS)
+    logs = read_json(LLM_LOG_FILE, [])
+    if not isinstance(logs, list):
+        logs = []
     next_entry = {
         "id": entry.get("id") or f"LLM-{uuid4().hex[:10]}",
         "time": entry.get("time") or now_iso(),

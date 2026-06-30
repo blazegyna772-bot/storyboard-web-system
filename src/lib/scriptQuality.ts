@@ -73,6 +73,14 @@ export const defaultScriptQualityRules: ScriptQualityRule[] = [
     enabled: true,
   },
   {
+    id: "scene-heading-separator",
+    name: "场次号缺少分隔",
+    category: "场次",
+    level: "警告",
+    description: "稳定检查：数字场次号后必须有空格，避免场次标题与地点粘连。",
+    enabled: true,
+  },
+  {
     id: "scene-number-sequence",
     name: "场次号连续性",
     category: "场次",
@@ -222,14 +230,15 @@ function detectIssues(lines: string[], rules: ScriptQualityRule[]) {
     if (!line) return;
     const numericScene = parseNumericSceneHeading(line);
     const chineseScene = parseChineseSceneHeading(line);
-    const sceneCandidate = numericScene || chineseScene;
+    const compactNumericScene = parseCompactNumericSceneHeading(line);
+    const sceneCandidate = numericScene || chineseScene || compactNumericScene;
 
     if (sceneCandidate) {
       sceneStarts.push({
         line: lineNumber,
         currentEpisodeNumber,
-        sceneEpisodeNumber: numericScene?.episodeNumber ?? 0,
-        sceneNumber: numericScene?.sceneNumber ?? parseChineseOrdinal(chineseScene?.sceneNumberText ?? ""),
+        sceneEpisodeNumber: (numericScene || compactNumericScene)?.episodeNumber ?? 0,
+        sceneNumber: (numericScene || compactNumericScene)?.sceneNumber ?? parseChineseOrdinal(chineseScene?.sceneNumberText ?? ""),
         raw: line,
       });
     }
@@ -246,7 +255,10 @@ function detectIssues(lines: string[], rules: ScriptQualityRule[]) {
     if (enabledRules.has("scene-heading-incomplete") && /^(?:场景|第?\s*\d+\s*场|[一二三四五六七八九十]+场)[一二三四五六七八九十\d]*\s*$/.test(line)) {
       issues.push(createIssue(enabledRules.get("scene-heading-incomplete")!, "场景行缺少地点或时间信息。", lineNumber, line));
     }
-    if (enabledRules.has("scene-heading-format") && sceneCandidate && !isCompleteSceneHeading(line, sceneCandidate.type)) {
+    if (enabledRules.has("scene-heading-separator") && compactNumericScene && !numericScene) {
+      issues.push(createIssue(enabledRules.get("scene-heading-separator")!, "场次号后缺少空格，导致标题与地点粘连。", lineNumber, line));
+    }
+    if (enabledRules.has("scene-heading-format") && (numericScene || chineseScene) && !isCompleteSceneHeading(line, (numericScene || chineseScene)!.type)) {
       issues.push(createIssue(enabledRules.get("scene-heading-format")!, "场次标题缺少地点、时间或内外景信息。", lineNumber, line));
     }
     if (enabledRules.has("scene-episode-ownership") && numericScene && currentEpisodeNumber && numericScene.episodeNumber !== currentEpisodeNumber) {
@@ -297,6 +309,17 @@ function parseEpisodeHeadingNumber(line: string) {
 
 function parseNumericSceneHeading(line: string) {
   const match = line.match(/^([0-9０-９]+)\s*[-－—]\s*([0-9０-９]+)(?:\s+|$)(.*)$/);
+  if (!match) return null;
+  return {
+    type: "numeric" as const,
+    episodeNumber: parseNumberText(match[1]),
+    sceneNumber: parseNumberText(match[2]),
+    rest: match[3]?.trim() ?? "",
+  };
+}
+
+function parseCompactNumericSceneHeading(line: string) {
+  const match = line.match(/^([0-9０-９]+)\s*[-－—]\s*([0-9０-９]+)(?=\S)(.*)$/);
   if (!match) return null;
   return {
     type: "numeric" as const,
